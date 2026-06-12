@@ -239,15 +239,15 @@ const formatDate = (date: Date) => {
 		<Header />
 		<main>
 			<section class="intro-section">
-				<div class="avatar-wrapper">
+				<!-- <div class="avatar-wrapper">
 					<img
 						class="intro-avatar"
 						src="/avatar.svg"
 						alt="Avatar"
 					/>
-				</div>
+				</div> -->
 				<div class="intro-content">
-					<h1 class="intro-title">Hello, I'm {AUTHOR_NAME}</h1>
+					<h1 class="intro-title">{AUTHOR_NAME}</h1>
 					<p class="intro-subtitle">{AUTHOR_TITLE}</p>
 					<p class="intro-description">{AUTHOR_DESCRIPTION}</p>
 				</div>
@@ -256,12 +256,12 @@ const formatDate = (date: Date) => {
 			<section class="posts-section">
 				<div class="section-header">
 					<h2 class="section-title">Latest Posts</h2>
-					<a href="/blog" class="section-link">View All →</a>
+					<a href="/writing" class="section-link">View All →</a>
 				</div>
 				<ul class="post-list">
 					{recentPosts.map((post) => (
 						<li class="post-item">
-							<a href={`/blog/${post.id}/`} class="post-link">
+							<a href={`/writing/${post.id}/`} class="post-link">
 								<span class="post-date">{formatDate(post.data.pubDate)}</span>
 								<h3 class="post-title">{post.data.title}</h3>
 							</a>

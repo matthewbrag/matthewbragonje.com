@@ -6,7 +6,7 @@ import { defineConfig, fontProviders } from 'astro/config';
 import rehypeWrapTables from './src/plugins/rehype-wrap-tables';
 
 export default defineConfig({
-	site: 'https://simple.com',
+	site: 'https://matthewbragonje.com',
 	vite: {},
 	integrations: [
 		expressiveCode({

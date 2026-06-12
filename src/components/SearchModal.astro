@@ -247,16 +247,16 @@ const isDark = 'dark';
 							url = url.replace(/\/index\.html$/, '/');
 						}
 						
-						if (!url.startsWith('/blog/')) {
+						if (!url.startsWith('/writing/')) {
 							return null;
 						}
 						
 						const cleanUrl = url.replace(/\/index\.html$/i, '/').replace(/\.html$/i, '');
-						if (cleanUrl === '/blog/' || cleanUrl === '/blog') {
+						if (cleanUrl === '/writing/' || cleanUrl === '/writing') {
 							return null;
 						}
 						
-						const postPath = cleanUrl.replace(/^\/blog\//, '').replace(/\/$/, '');
+						const postPath = cleanUrl.replace(/^\/writing\//, '').replace(/\/$/, '');
 						if (!postPath || postPath.length < 2) {
 							return null;
 						}

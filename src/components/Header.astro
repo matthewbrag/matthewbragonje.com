@@ -1,7 +1,7 @@
 ---
 import { SITE_TITLE } from '../consts';
 import HeaderLink from './HeaderLink.astro';
-import SearchModal from './SearchModal.astro';
+// import SearchModal from './SearchModal.astro';
 
 const isDark = 'dark';
 ---
@@ -38,12 +38,12 @@ const isDark = 'dark';
 		
 		<div class="nav-center">
 			<HeaderLink href="/">Home</HeaderLink>
-			<HeaderLink href="/blog">Blog</HeaderLink>
-			<HeaderLink href="/tags">Tags</HeaderLink>
+			<HeaderLink href="/writing">Writing</HeaderLink>
+			<!-- <HeaderLink href="/tags">Tags</HeaderLink> -->
 			<HeaderLink href="/about">About</HeaderLink>
 		</div>
 		
-		<div class="nav-right">
+		<!-- <div class="nav-right">
 			<SearchModal />
 			<button id="theme-toggle" class="nav-btn" title="Toggle theme" aria-label="Toggle theme">
 				<svg id="theme-icon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -84,7 +84,7 @@ const isDark = 'dark';
 					</svg>
 				</div>
 			</div>
-		</div>
+		</div> -->
 	</nav>
 </header>
 <script>

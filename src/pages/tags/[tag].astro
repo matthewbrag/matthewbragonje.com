@@ -196,18 +196,18 @@ function formatDate(dateString) {
   <Header />
   <main>
     <a href="/tags/" class="back-link">← Back to tags</a>
-    <h1 class="page-title">#{tag}</h1>
+    <h1 class="page-title">{tag}</h1>
     <p class="page-subtitle">{posts.length} posts</p>
     <ul class="post-list">
       {posts.map((post) => (
         <li class="post-item" key={post.id}>
-          <a href={`/blog/${post.id}/`} class="post-link">
+          <a href={`/writing/${post.id}/`} class="post-link">
             <span class="post-date">{formatDate(post.data.pubDate)}</span>
             <h3 class="post-title">{post.data.title}</h3>
             {post.data.tags && post.data.tags.length > 0 && (
               <div class="post-tags">
                 {post.data.tags.slice(0, 3).map((t) => (
-                  <span class="post-tag">#{t}</span>
+                  <span class="post-tag">{t}</span>
                 ))}
                 {post.data.tags.length > 3 && (
                   <span class="post-tag">...{post.data.tags.length - 3}</span>

@@ -1,23 +1,25 @@
 ---
-name: Bob
-title: Full Stack Developer / Technical Writer
+name: Matthew Bragonje
+title: Software Engineer & Experimentalist
 ---
 
 ## About Me
 
-Passionate about technology, focusing on Web development and security research. Sharing technical insights, study notes, and project experiences here.
+I'm a software engineer with interests that extend far beyond software. Professionally I mostly work on backend and data systems. I have an electrical engineering degree and have always been fascinated by all things technical and exploratory. 
 
-## Technical Skills
+This site is a colection of projects, articles, and notes on topics that capture my interest. 
 
-- JavaScript / TypeScript
-- React / Vue
-- Node.js
-- Python
-- Web Security
+## Technical Interestes
+
+- Physics
+- Machine Learning
+- Mathematics
+- Artificial Intelligence 
+- Computer Engineering
+- Software Engineering
+- Electrical Engineering
+
 
 ## Contact
 
-Feel free to reach out to me via:
-- Email: contact@example.com
-- GitHub: github.com/example
-- Twitter: @example
+Feel free to reach out to me via email at matthewbragonje@gmail.com
