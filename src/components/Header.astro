@@ -120,13 +120,13 @@ const isDark = 'dark';
 		
 		if (storedTheme === 'auto') {
 			activeTheme = getSystemTheme();
-			themeIcon.innerHTML = activeTheme === 'dark' ? DARK_ICON : LIGHT_ICON;
+			if (themeIcon) themeIcon.innerHTML = activeTheme === 'dark' ? DARK_ICON : LIGHT_ICON;
 		} else if (storedTheme === 'dark') {
 			activeTheme = 'dark';
-			themeIcon.innerHTML = DARK_ICON;
+			if (themeIcon) themeIcon.innerHTML = DARK_ICON;
 		} else {
 			activeTheme = 'light';
-			themeIcon.innerHTML = LIGHT_ICON;
+			if (themeIcon) themeIcon.innerHTML = LIGHT_ICON;
 		}
 		
 		const html = document.documentElement;

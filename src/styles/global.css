@@ -60,8 +60,8 @@ body {
 
 /* ── Global layout ── */
 main {
-	width: 700px;
-	max-width: calc(100% - 2rem);
+	width: 100%;
+	max-width: 700px;
 	margin: 0 auto;
 	padding: 2.5rem 1rem 4rem;
 }
