@@ -11,5 +11,5 @@ export const SOCIAL_LINKS = {
   github: 'https://github.com/matthewbrag',
   // twitter: 'https://twitter.com/yourusername',
   linkedin: 'https://www.linkedin.com/in/matthew-bragonje/',
-  email: 'mailto:matthewbragonje@gmail.com',
+  email: 'mailto:matthew@matthewbragonje.com',
 };
