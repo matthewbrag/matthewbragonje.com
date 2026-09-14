@@ -1,8 +1,11 @@
 // @ts-check
 
+import mdx from '@astrojs/mdx';
 import sitemap from '@astrojs/sitemap';
 import expressiveCode from 'astro-expressive-code';
 import { defineConfig, fontProviders } from 'astro/config';
+import rehypeKatex from 'rehype-katex';
+import remarkMath from 'remark-math';
 import rehypeWrapTables from './src/plugins/rehype-wrap-tables';
 
 export default defineConfig({
@@ -38,10 +41,12 @@ export default defineConfig({
 				return false;
 			},
 		}),
+		mdx(),
 		sitemap(),
 	],
 	markdown: {
-		rehypePlugins: [rehypeWrapTables],
+		remarkPlugins: [remarkMath],
+		rehypePlugins: [rehypeWrapTables, rehypeKatex],
 		syntaxHighlight: false,
 	},
 	fonts: [

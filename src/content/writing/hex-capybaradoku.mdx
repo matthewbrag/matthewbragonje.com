@@ -1,0 +1,84 @@
+---
+title: "Trying to Solve Capybaradoku With Linear Algebra"
+pubDate: 'Sep 13 2026'
+tags: ['Math', 'Games']
+description: ""
+---
+
+Capybaradoku is a game that I made for someone I care about so that she didn't have to watch ads on the game she liked. It's basically a clone of Linkedn's queens or Meowdoku. If you are unfamiliar, the game partitions the grid into connected colored regions. The rules are that you have to place an item (queen, cat, or capybara, depending on your variant) on a square grid so that there is only one item pre row, column, and color, also corners of items can not touch, so no adjacency. Recently I was thinking that it would be fun to add some variety and I thought about adding a hexagonal tiling mode rather than just the classic square. I'm not a math expert, but analyzing the puzzle turned out to be super interesting. 
+
+I have played the basic version quite a bit, and I've wondered what a solver would look like. The levels are verified by some code written by AI, but I found myself wondering if there was a better approach that didn't involve fully permuting the search space. Working on the hex grid, my mind jumped to linear algebra. We can set up each a system of equations to describe the constraints and "just" solve the system with Gaussian Elimination or something.
+
+Let's take the 9 wide hexagonal grid (what we will mostly be anayzing in this write up). There are 61 cells. 
+
+![A width-9 hexagonal Capybaradoku board with 61 numbered cells grouped into nine coloured regions.](/hex-9-grid.svg)
+
+We can describe each cell as having a value of 1, meaning capybara or 0, meaning no capybara.
+
+In the hexagonal version of the game, A capybara can't share any of it's 3 axes with another capybara. Think of picking a hex, and then going in a line from each side. Those hexes are eliminated, and each axis should still have a capybara placed.
+<details>
+<summary>Show one hex and its three-axis eliminations</summary>
+
+![One hex highlighted in green, with every cell along its three axes marked as eliminated.](/hex-eliminations.svg)
+
+</details>
+
+So, now we can just take the cells and set up the system. If you are unfamiliar with systems of equations, imagine setting up an equation to describe the top row of the puzzle. We know that there must be one capybara. So simply:
+
+$$c_1 + c_2 + c_3 + c_4 + c_5 = 1$$
+
+"The sum of all capybaras in that top row is 1". 
+
+The for that top left axis you can say again:
+
+$$c_1 + c_6 + c_{12} + c_{19} + c_{27} = 1$$
+
+Or "the sum of capybaras in that axis is one"
+
+Then for color, say green:
+
+$$c_{29} + c_{37} = 1$$
+
+"Greens only have one capybara"
+
+So we can describe each constraint in the solved game. The whole board has it's three axis, each has 9 constraint equations, then there are 9 colors. So we only need $9 \times (\underbrace{3}_{\text{axes}} + \underbrace{1}_{\text{colour}}) = 36$ equations.
+
+<details>
+
+<summary>Show one axis and its nine line-groups</summary>
+
+![One axis direction of the board, its nine parallel lines each shown as a differently coloured group numbered 1 to 9.](/hex-axis-9-groups.svg)
+
+</details>
+
+Then we just solve the system of equations, which is trivial for a computer. Which is where we run into a actually massive (literally) problem. If you have a system of equations where there are fewer constraints than variables, there's actually an infinite number of solutions! We have 36 constraints (our equations from earlier) and 61 variables (the number of cells). We are missing a key bit of information that makes this solvable. The current mathematical representaion of Capybaradoku allows for negative and fractional capybaras. Of course that would be cruel to them, and im not sure what a negative capybara is. We need to say that a cell can either be 0 or 1. So $c_i \in \{0, 1\}$ for every cell $i$.
+
+Fortunately we can now solve Capybaradoku! Unfortunately, there's no longer an easy way to solve all the equations. Gaussian elimination works because, over the real numbers, you can freely scale rows and add them together, and any blend of two solutions is still a solution. That freedom is exactly what gave us infinitely many answers a moment ago. But $\{0, 1\}$ has none of that structure: add two valid boards together and you get cells equal to 2, which isn't allowed. The moment we demand whole-number answers we've left linear algebra behind and stepped into *integer programming*, specifically 0–1 integer linear programming, which is NP-hard in general. The very restriction that finally makes the puzzle well-posed is the one that (almost certainly) makes it hard.
+
+Well at least we can check each possible solution against our 36 equations and verify it very quickly. Let's just search each possible value of each cell. That gives us the number of placements to check:
+
+ $$2^{61} = 2{,}305{,}843{,}009{,}213{,}693{,}952$$ 
+
+If we check one billion possiblities per second, it will only take us over 70 years to solve the puzzle. But that's a rather silly approach. We know that we can only place 9 capybaras. So we can instead search the list of ways to pick 9 cells from the total 61. This works out to:
+
+$$\binom{61}{9} = 17{,}341{,}763{,}505$$.
+
+Now this is getting better. A computer could solve the problem this way, it would still take a bit though. and it turns out we can still do a lot, lot better.
+
+Instead of representing the placement with a list of 61 1s and 0s, we can lean on a constraint we already have. Each row along our reference axis needs exactly one capybara, so a whole board is completely described by *which position each row's capybara sits in*. The trick is to number those positions with a single coordinate system shared across the whole board: the same number always names the same diagonal line, so instead of every row restarting at 1, the shorter rows lower down begin above 1. A placement then becomes a 9-tuple $(p_1, p_2, \ldots, p_9)$, where $p_i$ is the coordinate of the capybara in row $i$.
+
+Each row still only reaches the run of coordinates that actually pass through it, so it still has exactly as many choices as it has cells (5, then 6, 7, 8, 9, and back down) — the count of placements is unchanged. But the shared coordinate buys us something: because a number now means the same line everywhere, the second-axis rule ("no two capybaras share that diagonal") is just the statement that all nine $p_i$ are *different*.
+
+![Each row of the board labelled with local positions; one capybara highlighted per row, with the resulting tuple written below.](/hex-row-encoding.svg)
+
+Row 1 has 5 options, row 2 has 6, row 3 has 7, and so on up to 9 in the middle before shrinking back down. Multiplying the row lengths gives the number of placements this description can express:
+
+$$5 \times 6 \times 7 \times 8 \times 9 \times 8 \times 7 \times 6 \times 5 = 25{,}401{,}600$$
+
+Notice that the placement numbers show a second axis, one along ones, one along twos, etc.
+
+[image showing second axis]
+
+There's another constraint from this second axis, we can only pick a location once. So we can't have something like (1, 4, 1, ... ) that would be invalid since there would be two capybaras on this second axis. 
+
+So that changes our search space size again. The math is a little more difficult here since
