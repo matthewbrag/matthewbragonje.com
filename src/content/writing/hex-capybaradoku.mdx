@@ -81,6 +81,8 @@ Which is where we run into an actually massive (literally) problem.
 
 In this case, if you have a system of equations where there are fewer constraints than variables, there are infinitely many solutions. We have 36 constraints, our equations from earlier, and 61 variables, the number of cells. That's not always the rule, but for Capybaradoku it is because we already know the system is consistent.
 
+At this point I should mention that I have essentially no background in integer programming. I sort of assumed that there was a linear-algebra approach that could enforce whole-number answers. It makes clear sense to me now why that is not the case.
+
 We are missing a key bit of information that makes this solvable.
 
 The current mathematical representation of Capybaradoku allows for negative and fractional capybaras. Of course that would be cruel to them, to make them fractional, and I'm not sure what a negative capybara is.
