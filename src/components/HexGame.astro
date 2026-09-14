@@ -1,0 +1,182 @@
+---
+// Playable hexagon Capybaradoku board. Self-contained: generates a unique level
+// client-side and handles input. Usage: <HexGame side={5} />
+interface Props { side?: number }
+const { side = 5 } = Astro.props;
+---
+
+<div class="hexgame" data-hexgame data-side={side}>
+  <div class="hg-bar">
+    <span class="hg-hearts" aria-label="hearts"></span>
+    <span class="hg-status"></span>
+    <span class="hg-controls">
+      <button type="button" class="hg-btn hg-new">New</button>
+      <button type="button" class="hg-btn hg-reset">Reset</button>
+      <button type="button" class="hg-btn hg-undo">Undo</button>
+    </span>
+  </div>
+  <svg class="hg-board" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Playable hexagon board"></svg>
+  <p class="hg-rule">Single-tap for a note dot; double-tap to place a capybara. One capybara per line along all three axes, and one per colour patch.</p>
+</div>
+
+<style is:global>
+  .hexgame {
+    margin: 1.75rem 0;
+    padding: 1rem;
+    border: 1px solid var(--border-color, #e4e4e7);
+    border-radius: 12px;
+    background: var(--bg-secondary, #fafafa);
+  }
+  .hg-bar { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; flex-wrap: wrap; }
+  .hg-hearts { font-size: 1.2rem; letter-spacing: 2px; }
+  .hg-status { font-weight: 700; color: #e2703a; min-height: 1.2em; flex: 1; }
+  .hg-controls { display: flex; gap: 0.5rem; margin-left: auto; }
+  .hg-btn {
+    font: inherit; font-weight: 600; cursor: pointer;
+    color: var(--text-primary, #18181b);
+    background: var(--bg-primary, #fff);
+    border: 1.5px solid var(--border-color, #e4e4e7);
+    border-radius: 9px; padding: 0.35rem 0.75rem;
+  }
+  .hg-btn:active { transform: translateY(1px); }
+  .hg-board { width: 100%; height: auto; max-width: 460px; margin: 0 auto; display: block; touch-action: manipulation; user-select: none; }
+  .hg-rule { color: var(--text-muted, #71717a); font-size: 0.82rem; text-align: center; margin: 0.75rem 0 0; }
+  .hg-board .hg-cell { cursor: pointer; }
+  .hg-board .hg-cell:active { filter: brightness(0.92); }
+  .hg-thin { stroke: rgba(0,0,0,0.18); stroke-width: 1; fill: none; pointer-events: none; }
+  .hg-thick { stroke: #2a2016; stroke-width: 4; stroke-linecap: round; pointer-events: none; }
+  .hg-dot { fill: rgba(0,0,0,0.4); pointer-events: none; }
+  .hg-capy { pointer-events: none; }
+  .hg-bad { stroke: #d63b3b; stroke-width: 4; fill: none; pointer-events: none; }
+  html.dark .hg-thick { stroke: #0c0a08; }
+</style>
+
+<script>
+  const REGION_COLORS = ["#c98a5e","#7fb069","#5ba3c7","#e6a15b","#b088c9","#e28f8f","#6fc4b0","#d9c26a","#8fa5d9","#c47fa5","#9db06b","#d79f7a","#8ec6a0"];
+  const SVGNS = "http://www.w3.org/2000/svg";
+  const EMPTY = 0, MARK = 1, CAT = 2;
+
+  function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+  function hashSeed(s){let h=2166136261>>>0;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619);}return h>>>0;}
+
+  function makeCells(R){const cells=[],id={};for(let x=-R;x<=R;x++)for(let y=-R;y<=R;y++){const z=-x-y;if(Math.abs(z)<=R){id[`${x},${y}`]=cells.length;cells.push({x,y,z,i:cells.length});}}return {cells,id};}
+  const DIRS=[[1,-1],[1,0],[0,1],[-1,1],[-1,0],[0,-1]];
+  const DIR_EDGE=[0,5,4,3,2,1];
+  function neighbors(c,id){const out=[];for(const[dx,dy]of DIRS){const k=`${c.x+dx},${c.y+dy}`;if(k in id)out.push(id[k]);}return out;}
+
+  function enumerate(cells,regionOf,cap=2){
+    const xl={};for(const c of cells)(xl[c.x]=xl[c.x]||[]).push(c);
+    const xs=Object.keys(xl).map(Number).sort((a,b)=>a-b);
+    const uY=new Set(),uZ=new Set(),uR=new Set(),sols=[],cur=[];
+    function rec(k){if(sols.length>=cap)return;if(k===xs.length){sols.push(cur.slice());return;}for(const c of xl[xs[k]]){if(uY.has(c.y)||uZ.has(c.z))continue;const r=regionOf[c.i];if(uR.has(r))continue;uY.add(c.y);uZ.add(c.z);uR.add(r);cur.push(c.i);rec(k+1);cur.pop();uY.delete(c.y);uZ.delete(c.z);uR.delete(r);}}
+    rec(0);return sols;
+  }
+  function randomSolution(cells,rng){
+    const xl={};for(const c of cells)(xl[c.x]=xl[c.x]||[]).push(c);
+    const xs=Object.keys(xl).map(Number).sort((a,b)=>a-b);
+    const uY=new Set(),uZ=new Set(),cur=[];
+    function rec(k){if(k===xs.length)return true;const order=[...xl[xs[k]]].sort(()=>rng()-0.5);for(const c of order){if(uY.has(c.y)||uZ.has(c.z))continue;uY.add(c.y);uZ.add(c.z);cur.push(c);if(rec(k+1))return true;cur.pop();uY.delete(c.y);uZ.delete(c.z);}return false;}
+    return rec(0)?cur.slice():null;
+  }
+  function growRegions(cells,id,sol,rng){
+    const regionOf=new Array(cells.length).fill(-1),fr=[];
+    sol.forEach((c,ri)=>{regionOf[c.i]=ri;fr.push({c,ri});});
+    let rem=cells.length-sol.length;
+    while(rem>0){let prog=false;const o=[...fr].sort(()=>rng()-0.5);for(const f of o){const nb=neighbors(f.c,id).filter(n=>regionOf[n]===-1);if(nb.length){const pk=nb[Math.floor(rng()*nb.length)];regionOf[pk]=f.ri;fr.push({c:cells[pk],ri:f.ri});rem--;prog=true;break;}}if(!prog)break;}
+    return {regionOf,ok:rem===0};
+  }
+  function regionSize(regionOf,reg){let n=0;for(const x of regionOf)if(x===reg)n++;return n;}
+  function connWithout(cells,id,regionOf,reg,rm){const m=[];for(const c of cells)if(regionOf[c.i]===reg&&c.i!==rm)m.push(c.i);if(!m.length)return false;const s=new Set(m),seen=new Set([m[0]]),st=[m[0]];while(st.length){const cid=st.pop();for(const n of neighbors(cells[cid],id))if(s.has(n)&&!seen.has(n)){seen.add(n);st.push(n);}}return seen.size===m.length;}
+  function refine(cells,id,regionOf,sol,rng,mx=1200){
+    regionOf=regionOf.slice();const ss=new Set(sol.map(c=>c.i));
+    for(let it=0;it<mx;it++){const sols=enumerate(cells,regionOf,2);if(sols.length<=1)return {regionOf,unique:sols.length===1};
+      const alt=sols.find(s=>s.some(i=>!ss.has(i)))||sols[1];const diff=alt.filter(i=>!ss.has(i)).sort(()=>rng()-0.5);let fl=false;
+      for(const cid of diff){const reg=regionOf[cid];if(regionSize(regionOf,reg)<=1)continue;if(!connWithout(cells,id,regionOf,reg,cid))continue;const nr=[...new Set(neighbors(cells[cid],id).map(n=>regionOf[n]).filter(x=>x!==reg))];if(!nr.length)continue;regionOf[cid]=nr[Math.floor(rng()*nr.length)];fl=true;break;}
+      if(!fl)return {regionOf,unique:false};}
+    return {regionOf,unique:enumerate(cells,regionOf,2).length===1};
+  }
+  function generateUnique(R,seedBase){
+    const {cells,id}=makeCells(R);
+    for(let seq=0;seq<3000;seq++){const rng=mulberry32(hashSeed(`hexb|${R}|${seedBase}|${seq}`));const sol=randomSolution(cells,rng);if(!sol)continue;const {regionOf,ok}=growRegions(cells,id,sol,rng);if(!ok)continue;const res=refine(cells,id,regionOf,sol,rng);if(res.unique)return {cells,id,regionOf:res.regionOf,solution:sol};}
+    return null;
+  }
+
+  const SIZE=30;
+  const center=(x,z)=>({px:SIZE*Math.sqrt(3)*(x+z/2),py:SIZE*1.5*z});
+  const verts=(px,py)=>{const v=[];for(let k=0;k<6;k++){const a=(Math.PI/180)*(60*k-30);v.push([px+SIZE*Math.cos(a),py+SIZE*Math.sin(a)]);}return v;};
+
+  function init(root){
+    const R = Math.max(2, Math.min(6, (parseInt(root.dataset.side || "5", 10) - 1)));
+    const board = root.querySelector(".hg-board");
+    const heartsEl = root.querySelector(".hg-hearts");
+    const statusEl = root.querySelector(".hg-status");
+    let state = null, capyEls = [], dotEls = [], badEls = [];
+    let lastI = -1, lastT = 0;
+    const DOUBLE_MS = 280;
+
+    function newLevel(seedBase){
+      const gen = generateUnique(R, seedBase);
+      if (!gen) return;
+      state = { cells: gen.cells, id: gen.id, regionOf: gen.regionOf, target: 2*R+1,
+                cell: new Uint8Array(gen.cells.length), hearts: 3, status: "playing", history: [] };
+      build(); render();
+    }
+
+    function build(){
+      const { cells, id, regionOf } = state;
+      board.innerHTML = "";
+      capyEls = new Array(cells.length); dotEls = new Array(cells.length); badEls = new Array(cells.length);
+      let minX=1e9,minY=1e9,maxX=-1e9,maxY=-1e9; const cv={};
+      for(const c of cells){const {px,py}=center(c.x,c.z);const v=verts(px,py);cv[c.i]=v;for(const[a,b]of v){minX=Math.min(minX,a);minY=Math.min(minY,b);maxX=Math.max(maxX,a);maxY=Math.max(maxY,b);}}
+      const pad=6;
+      board.setAttribute("viewBox",`${(minX-pad).toFixed(1)} ${(minY-pad).toFixed(1)} ${((maxX-minX)+2*pad).toFixed(1)} ${((maxY-minY)+2*pad).toFixed(1)}`);
+      for(const c of cells){const v=cv[c.i];const poly=document.createElementNS(SVGNS,"polygon");poly.setAttribute("points",v.map(p=>p.join(",")).join(" "));poly.setAttribute("fill",REGION_COLORS[regionOf[c.i]%REGION_COLORS.length]);poly.setAttribute("class","hg-cell");poly.addEventListener("click",()=>onTap(c.i));board.appendChild(poly);}
+      for(const c of cells){const v=cv[c.i];const p=document.createElementNS(SVGNS,"polygon");p.setAttribute("points",v.map(q=>q.join(",")).join(" "));p.setAttribute("class","hg-thin");board.appendChild(p);}
+      for(const c of cells){const v=cv[c.i];for(let d=0;d<6;d++){const nb=id[`${c.x+DIRS[d][0]},${c.y+DIRS[d][1]}`];if(nb===undefined||regionOf[nb]!==regionOf[c.i]){const e=DIR_EDGE[d];const a=v[e],b=v[(e+1)%6];const ln=document.createElementNS(SVGNS,"line");ln.setAttribute("x1",a[0]);ln.setAttribute("y1",a[1]);ln.setAttribute("x2",b[0]);ln.setAttribute("y2",b[1]);ln.setAttribute("class","hg-thick");board.appendChild(ln);}}}
+      for(const c of cells){const {px,py}=center(c.x,c.z);
+        const img=document.createElementNS(SVGNS,"image");img.setAttribute("href","/capybara.png");const s=SIZE*1.5;img.setAttribute("x",px-s/2);img.setAttribute("y",py-s/2);img.setAttribute("width",s);img.setAttribute("height",s);img.setAttribute("class","hg-capy");img.style.display="none";board.appendChild(img);capyEls[c.i]=img;
+        const dot=document.createElementNS(SVGNS,"circle");dot.setAttribute("cx",px);dot.setAttribute("cy",py);dot.setAttribute("r",SIZE*0.22);dot.setAttribute("class","hg-dot");dot.style.display="none";board.appendChild(dot);dotEls[c.i]=dot;
+        const bad=document.createElementNS(SVGNS,"circle");bad.setAttribute("cx",px);bad.setAttribute("cy",py);bad.setAttribute("r",SIZE*0.78);bad.setAttribute("class","hg-bad");bad.style.display="none";board.appendChild(bad);badEls[c.i]=bad;}
+    }
+
+    function conflicts(){
+      const { cells, cell, regionOf } = state; const bad=new Set();
+      const cats=cells.filter(c=>cell[c.i]===CAT);
+      const g={x:{},y:{},z:{},r:{}};
+      for(const c of cats){(g.x[c.x]=g.x[c.x]||[]).push(c.i);(g.y[c.y]=g.y[c.y]||[]).push(c.i);(g.z[c.z]=g.z[c.z]||[]).push(c.i);const rg=regionOf[c.i];(g.r[rg]=g.r[rg]||[]).push(c.i);}
+      for(const grp of Object.values(g))for(const k in grp)if(grp[k].length>1)grp[k].forEach(i=>bad.add(i));
+      return bad;
+    }
+    function isWon(){const {cells,cell,target}=state;let n=0;for(const c of cells)if(cell[c.i]===CAT)n++;return n===target && conflicts().size===0;}
+
+    function onTap(i){
+      if(state.status!=="playing")return;const now=Date.now();const isDouble=i===lastI&&now-lastT<DOUBLE_MS;
+      if(isDouble){lastI=-1;lastT=0;const top=state.history[state.history.length-1];if(top&&top.i===i){state.cell[i]=top.prev;state.history.pop();}setCell(i,CAT);return;}
+      lastI=i;lastT=now;const prev=state.cell[i];setCell(i,prev===EMPTY?MARK:EMPTY);
+    }
+    function setCell(i,next){
+      if(state.status!=="playing")return;const prev=state.cell[i];if(prev===next)return;
+      state.history.push({i,prev});state.cell[i]=next;
+      if(next===CAT&&conflicts().has(i)){state.hearts--;if(state.hearts<=0)state.status="lost";}
+      if(state.status==="playing"&&isWon())state.status="won";
+      render();
+    }
+    function undo(){if(state.status==="lost"||!state.history.length)return;const {i,prev}=state.history.pop();state.cell[i]=prev;if(state.status==="won")state.status="playing";render();}
+
+    function render(){
+      const {cells,cell}=state;const bad=conflicts();
+      for(const c of cells){const i=c.i;capyEls[i].style.display=cell[i]===CAT?"block":"none";dotEls[i].style.display=cell[i]===MARK?"block":"none";badEls[i].style.display=(cell[i]===CAT&&bad.has(i))?"block":"none";}
+      const h=Math.max(0,state.hearts);
+      heartsEl.textContent="❤️".repeat(h)+"🖤".repeat(3-h);
+      statusEl.textContent = state.status==="won" ? "Solved! 🎉" : state.status==="lost" ? "Out of hearts 💔" : "";
+    }
+
+    root.querySelector(".hg-new").addEventListener("click",()=>newLevel(Date.now().toString()));
+    root.querySelector(".hg-reset").addEventListener("click",()=>{state.cell=new Uint8Array(state.cells.length);state.hearts=3;state.status="playing";state.history=[];render();});
+    root.querySelector(".hg-undo").addEventListener("click",undo);
+
+    newLevel("demo");
+  }
+
+  document.querySelectorAll(".hexgame").forEach(init);
+</script>
