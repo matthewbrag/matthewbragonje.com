@@ -1,0 +1,572 @@
+---
+// Auction sim. A fixed pool of shoppers (drawn from the same conversion model
+// as SmartBiddingSim) runs through a second-price auction between three
+// companies, each with a target-ROAS slider. Bids are EV/tROAS; the top bid
+// wins and pays the second price (floored at a small reserve). Conversions use
+// expected values so the numbers move smoothly as you drag a slider.
+// Self-contained, vanilla JS. Usage: <AuctionSim />
+interface Props { pi?: number; lambda?: number; fuzz?: number; n?: number; price?: boolean; curve?: boolean; heatmap?: boolean }
+const { pi = 0.35, lambda = 10, fuzz = 2.5, n = 100000, price = false, curve = false, heatmap = false } = Astro.props;
+---
+
+<div class="auc" data-auc data-pi={pi} data-lambda={lambda} data-fuzz={fuzz} data-n={n} data-price={price ? "1" : "0"} data-curve={curve ? "1" : "0"} data-heatmap={heatmap ? "1" : "0"}>
+  <div class="auc-sliders"></div>
+  <table class="auc-table">
+    <thead>
+      <tr><th>Company</th><th>Click share</th><th>Avg CPC</th><th>Conv. rate</th><th>Profit</th></tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+  <div class="auc-barwrap">
+    <span class="auc-bartitle">Profit</span>
+    <svg class="auc-bars" xmlns="http://www.w3.org/2000/svg" role="img"
+         aria-label="Profit per company at the current target-ROAS settings."></svg>
+  </div>
+  <div class="auc-curvewrap" hidden>
+    <div class="auc-curvehead"><span class="auc-curvetitle">Profit vs target ROAS</span><span class="auc-curvepick"></span></div>
+    <svg class="auc-curve" xmlns="http://www.w3.org/2000/svg" role="img"
+         aria-label="Profit as a function of the selected company's target ROAS, with the other companies held fixed."></svg>
+  </div>
+  <div class="auc-hmwrap" hidden>
+    <div class="auc-curvehead"><span class="auc-curvetitle">Profit landscape (price &times; tROAS)</span><span class="auc-hmpick"></span></div>
+    <div class="auc-hmstage"><canvas class="auc-hmcanvas"></canvas><div class="auc-hmtip"></div></div>
+    <div class="auc-hmlegend"><span>loss</span><span class="auc-hmbar"></span><span>profit</span></div>
+    <p class="auc-hmfoot"></p>
+  </div>
+  <p class="auc-foot"></p>
+</div>
+
+<style is:global>
+  .auc {
+    margin: 1.75rem 0; padding: 1rem;
+    border: 1px solid var(--border-color, #e4e4e7);
+    border-radius: 12px; background: var(--bg-secondary, #fafafa);
+  }
+  .auc-sliders { display: grid; grid-template-columns: auto 1fr auto; gap: 0.4rem 0.75rem; align-items: center; margin-bottom: 0.9rem; }
+  .auc-ghead { grid-column: 1 / -1; font-weight: 700; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted, #71717a); margin-top: 0.35rem; }
+  .auc-ghead:first-child { margin-top: 0; }
+  .auc-slabel { font-weight: 700; font-size: 0.9rem; white-space: nowrap; }
+  .auc-sliders input[type="range"] { width: 100%; }
+  .auc-sval { font-variant-numeric: tabular-nums; font-weight: 700; font-size: 0.9rem; text-align: right; min-width: 6.5rem; color: var(--text-secondary, #3f3f46); }
+  .auc-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  .auc-table th, .auc-table td { padding: 0.4rem 0.5rem; text-align: right; border-bottom: 1px solid var(--border-color, #e4e4e7); }
+  .auc-table th:first-child, .auc-table td:first-child { text-align: left; }
+  .auc-table thead th { color: var(--text-muted, #71717a); font-weight: 700; font-size: 0.8rem; }
+  .auc-table tbody td { font-variant-numeric: tabular-nums; color: var(--text-primary, #18181b); }
+  .auc-name { font-weight: 700; }
+  .auc-barwrap { margin-top: 0.9rem; }
+  .auc-bartitle { font-weight: 700; font-size: 0.85rem; color: var(--text-primary, #18181b); }
+  .auc-bars { width: 100%; height: auto; max-width: 680px; display: block; margin-top: 0.25rem; }
+  .auc-curvewrap { margin-top: 1rem; }
+  .auc-curvehead { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 0.3rem; }
+  .auc-curvetitle { font-weight: 700; font-size: 0.85rem; color: var(--text-primary, #18181b); }
+  .auc-curvepick { display: flex; gap: 0.35rem; flex-wrap: wrap; }
+  .auc-cbtn { font: inherit; font-weight: 600; font-size: 0.8rem; cursor: pointer;
+              color: var(--text-secondary, #3f3f46); background: var(--bg-primary, #fff);
+              border: 1.5px solid var(--border-color, #e4e4e7); border-radius: 8px; padding: 0.2rem 0.6rem; }
+  .auc-cbtn[aria-pressed="true"] { color: #fff; border-color: transparent; }
+  .auc-curve { width: 100%; height: auto; max-width: 680px; display: block; }
+  .auc-hmwrap { margin-top: 1rem; }
+  .auc-hmpick { display: flex; gap: 0.35rem; flex-wrap: wrap; }
+  .auc-hmstage { position: relative; max-width: 680px; }
+  .auc-hmcanvas { width: 100%; height: auto; display: block; border-radius: 6px; }
+  .auc-hmtip { position: absolute; pointer-events: none; opacity: 0; transform: translate(-50%, -115%);
+               background: var(--text-primary, #18181b); color: var(--bg-primary, #fff); font-size: 0.72rem;
+               font-weight: 600; padding: 0.25rem 0.45rem; border-radius: 6px; white-space: nowrap;
+               font-variant-numeric: tabular-nums; transition: opacity 0.1s; z-index: 2; }
+  .auc-hmlegend { display: flex; align-items: center; gap: 0.5rem; max-width: 680px; margin: 0.5rem 0 0;
+                  font-size: 0.76rem; color: var(--text-muted, #71717a); }
+  .auc-hmbar { width: 150px; height: 9px; border-radius: 5px;
+               background: linear-gradient(to right, #d64a2a, #f0efec 50%, #2a78d6); }
+  html.dark .auc-hmbar { background: linear-gradient(to right, #d95926, #383835 50%, #3987e5); }
+  .auc-hmfoot { color: var(--text-muted, #71717a); font-size: 0.82rem; margin: 0.55rem 0 0;
+                font-variant-numeric: tabular-nums; min-height: 1.2em; }
+  .auc-foot { color: var(--text-muted, #71717a); font-size: 0.82rem; margin: 0.7rem 0 0; font-variant-numeric: tabular-nums; }
+  .auc-lab { fill: var(--text-muted, #71717a); font-size: 12px; font-family: ui-sans-serif, system-ui, sans-serif; }
+  .auc-zero { stroke: var(--text-muted, #71717a); stroke-width: 1; opacity: 0.5; }
+</style>
+
+<script>
+  const SVGNS = "http://www.w3.org/2000/svg";
+  const COST = 5;            // common wholesale cost per meteorite; margin = price - COST
+  const COMPANIES = [
+    { name: "Planetary Scrap",     short: "Planetary", price: 12, color: "#5ba3c7", troas: 2.0 },
+    { name: "Orbit Iron",          short: "Orbit",     price: 17, color: "#7fb069", troas: 2.0 },
+    { name: "Celestial Specimens", short: "Celestial", price: 24, color: "#b088c9", troas: 2.0 },
+  ].map((c) => ({ ...c, margin: c.price - COST }));
+  const RESERVE = 0.25;      // auction floor: an ad only shows if the top bid clears it
+  const SIGMA = 0.35;        // multiplicative bid noise: bites hardest when bids are close
+  const TMIN = 0.9, TMAX = 3, TSTEP = 0.05;
+  const PMIN = 6, PMAX = 40, PSTEP = 1;   // price-lever range (only when price sliders are on)
+
+  function init(root){
+    const pi = parseFloat(root.dataset.pi || "0.35");
+    const lambda = parseFloat(root.dataset.lambda || "10");
+    const fuzz = parseFloat(root.dataset.fuzz || "2.5");
+    const N = parseInt(root.dataset.n || "10000", 10);
+    const PRICE_LEVER = root.dataset.price === "1";
+    const CURVE = root.dataset.curve === "1";
+    const HEATMAP = root.dataset.heatmap === "1";
+    const K = COMPANIES.length;
+
+    // mutable per-company price/margin so pricing can become a live lever
+    const priceArr = COMPANIES.map((c) => c.price);
+    const marginArr = COMPANIES.map((c) => c.price - COST);
+
+    const curveAt = (w, p) => 1 / (1 + Math.exp((p - w) / fuzz));
+    const shift = -lambda * Math.log(1 - pi);
+    const sampleBudget = () => -lambda * Math.log(1 - Math.random()) - shift;
+
+    // fixed pool: per shopper, per company expected revenue EV, conv prob, and a
+    // fixed multiplicative bid-noise draw (lognormal). Drawing the noise once (like
+    // the pool) keeps the response smooth as sliders move; the relative noise flips
+    // the winner most when bids are close and barely when they're far apart.
+    function gauss(){
+      let u = 0, v = 0; while (u === 0) u = Math.random(); while (v === 0) v = Math.random();
+      return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+    }
+    const EV = Array.from({length: K}, () => new Float64Array(N));
+    const PC = Array.from({length: K}, () => new Float64Array(N));
+    const NOISE = Array.from({length: K}, () => new Float64Array(N));
+    const W = new Float64Array(N);       // fixed budgets, so a column can be recomputed on price change
+    const UCONV = new Float64Array(N);   // fixed uniform draw for the winner's conversion coin-flip
+    for (let i = 0; i < N; i++){
+      const w = sampleBudget();
+      W[i] = w; UCONV[i] = Math.random();
+      for (let c = 0; c < K; c++){
+        NOISE[c][i] = Math.exp(SIGMA * gauss());
+      }
+    }
+    // (re)compute a company's conversion prob + expected revenue at its current price
+    function recomputeCol(c){
+      const p = priceArr[c];
+      for (let i = 0; i < N; i++){ const pc = curveAt(W[i], p); PC[c][i] = pc; EV[c][i] = pc * p; }
+    }
+    for (let c = 0; c < K; c++) recomputeCol(c);
+
+    const troas = COMPANIES.map((c) => c.troas);
+
+    function compute(){
+      const clicks = new Float64Array(K), spend = new Float64Array(K),
+            conv = new Float64Array(K), rev = new Float64Array(K);
+      let totalClicks = 0;
+      for (let i = 0; i < N; i++){
+        // bids for this shopper
+        let b0 = -1, b1 = -1, win = -1;   // highest, second-highest, winner idx
+        for (let c = 0; c < K; c++){
+          const bid = (EV[c][i] / troas[c]) * NOISE[c][i];
+          if (bid > b0){ b1 = b0; b0 = bid; win = c; }
+          else if (bid > b1){ b1 = bid; }
+        }
+        if (b0 < RESERVE) continue;       // no ad shown
+        const cpc = Math.max(b1, RESERVE); // second price, floored at reserve
+        clicks[win] += 1; spend[win] += cpc; totalClicks += 1;
+        // winning is the click (CTR=1); conversion is an actual Bernoulli(p_conv) draw
+        if (UCONV[i] < PC[win][i]){ conv[win] += 1; rev[win] += priceArr[win]; }
+      }
+      return COMPANIES.map((c, k) => ({
+        clicks: clicks[k],
+        share: totalClicks ? clicks[k] / totalClicks : 0,
+        cpc: clicks[k] ? spend[k] / clicks[k] : 0,
+        convRate: clicks[k] ? conv[k] / clicks[k] : 0,
+        spend: spend[k], revenue: rev[k],
+        profit: conv[k] * marginArr[k] - spend[k],
+      }));
+    }
+
+    // --- build controls ---------------------------------------------------
+    const slidersEl = root.querySelector(".auc-sliders");
+    const valEls = [], priceValEls = [];
+
+    function groupHead(text, min, max){
+      const h = document.createElement("span");
+      h.className = "auc-ghead";
+      h.textContent = `${text} (${min}–${max})`;
+      slidersEl.appendChild(h);
+    }
+    function makeSlider(labelText, color, min, max, step, value, onInput){
+      const lab = document.createElement("span");
+      lab.className = "auc-slabel"; lab.textContent = labelText; lab.style.color = color;
+      const input = document.createElement("input");
+      input.type = "range"; input.min = min; input.max = max; input.step = step;
+      input.value = String(value); input.style.accentColor = color;
+      const val = document.createElement("span"); val.className = "auc-sval";
+      input.addEventListener("input", () => onInput(parseFloat(input.value)));
+      slidersEl.append(lab, input, val);
+      return val;
+    }
+
+    // Group by lever type so sliders that share a scale sit together (and are
+    // comparable across companies). tROAS and price are different units, so they
+    // are never on the same scale -- the group headers make each scale explicit.
+    groupHead("Target ROAS", TMIN, TMAX);
+    COMPANIES.forEach((c, k) => {
+      valEls.push(makeSlider(`${c.short} tROAS`, c.color, TMIN, TMAX, TSTEP, troas[k],
+        (v) => { troas[k] = v; scheduleRender(); }));
+    });
+    if (PRICE_LEVER){
+      groupHead("Price", `$${PMIN}`, `$${PMAX}`);
+      COMPANIES.forEach((c, k) => {
+        priceValEls.push(makeSlider(`${c.short} price`, c.color, PMIN, PMAX, PSTEP, priceArr[k],
+          (v) => { priceArr[k] = v; marginArr[k] = v - COST; recomputeCol(k); scheduleRender(); }));
+      });
+    }
+
+    // Throttle recompute to one per animation frame so a fast drag coalesces
+    // into at most 60 recomputes/sec instead of queueing one per input event.
+    let raf = 0;
+    function scheduleRender(){
+      if (raf) return;
+      raf = requestAnimationFrame(() => { raf = 0; render(); });
+    }
+
+    const tbody = root.querySelector(".auc-table tbody");
+    const barsSvg = root.querySelector(".auc-bars");
+    const foot = root.querySelector(".auc-foot");
+
+    // ---- profit-vs-tROAS curve for a selected company ----------------------
+    // For fixed rivals, each shopper i has a tROAS threshold thr[i] below which
+    // the focal company outbids the field (and clears the reserve). Sorting by
+    // thr[i] and suffix-summing each shopper's profit contribution g[i] yields
+    // the whole curve exactly in one pass -- matching the table's numbers.
+    const curveWrap = root.querySelector(".auc-curvewrap");
+    const curvePick = root.querySelector(".auc-curvepick");
+    const curveSvg = root.querySelector(".auc-curve");
+    let curFocal = 0, curveSig = "";
+    let thrSorted = null, gSuffix = null;   // shared arrays for the sorted structure
+
+    function buildCurveStruct(){
+      const cf = curFocal, mF = marginArr[cf];
+      const thr = new Float64Array(N), g = new Float64Array(N);
+      for (let i = 0; i < N; i++){
+        const fb = EV[cf][i] * NOISE[cf][i];            // focal bid = fb / troas
+        let R = 0;                                       // best rival bid at current troas
+        for (let j = 0; j < K; j++){ if (j === cf) continue; const b = EV[j][i] / troas[j] * NOISE[j][i]; if (b > R) R = b; }
+        const winThr = R > 0 ? fb / R : Infinity;        // focal wins while troas < winThr
+        const showThr = fb / RESERVE;                    // focal bid >= reserve while troas <= showThr
+        thr[i] = Math.min(winThr, showThr);
+        const pay = Math.max(R, RESERVE);
+        const converted = UCONV[i] < PC[cf][i] ? 1 : 0;
+        g[i] = converted * mF - pay;
+      }
+      const idx = Array.from({length: N}, (_, i) => i).sort((a, b) => thr[a] - thr[b]);
+      thrSorted = new Float64Array(N); gSuffix = new Float64Array(N + 1);
+      for (let k = 0; k < N; k++) thrSorted[k] = thr[idx[k]];
+      for (let k = N - 1; k >= 0; k--) gSuffix[k] = gSuffix[k + 1] + g[idx[k]];
+    }
+    function curveProfit(t){
+      // sum g[i] for all i with thr[i] > t  == suffix from first index where thr > t
+      let lo = 0, hi = N;
+      while (lo < hi){ const mid = (lo + hi) >> 1; if (thrSorted[mid] <= t) lo = mid + 1; else hi = mid; }
+      return gSuffix[lo];
+    }
+    function updateCurve(){
+      if (!CURVE) return;
+      const sig = curFocal + "|" + priceArr.join(",") + "|" + troas.map((t, j) => j === curFocal ? "x" : t).join(",");
+      if (sig !== curveSig){ curveSig = sig; buildCurveStruct(); }
+      drawCurve();
+    }
+    function drawCurve(){
+      const c = COMPANIES[curFocal];
+      const W_ = 680, H_ = 220, ml = 56, mr = 14, mt = 12, mb = 34;
+      const pw = W_ - ml - mr, ph = H_ - mt - mb;
+      const STEPS = 90;
+      const xs = [], ys = [];
+      let ymin = Infinity, ymax = -Infinity, bestT = TMIN, bestP = -Infinity;
+      for (let k = 0; k <= STEPS; k++){
+        const t = TMIN + (TMAX - TMIN) * k / STEPS;
+        const p = curveProfit(t);
+        xs.push(t); ys.push(p);
+        if (p < ymin) ymin = p; if (p > ymax) ymax = p;
+        if (p > bestP){ bestP = p; bestT = t; }
+      }
+      const pad = (ymax - ymin) * 0.08 || 1; ymin -= pad; ymax += pad;
+      const sx = (t) => ml + ((t - TMIN) / (TMAX - TMIN)) * pw;
+      const sy = (p) => mt + (1 - (p - ymin) / (ymax - ymin)) * ph;
+      curveSvg.setAttribute("viewBox", `0 0 ${W_} ${H_}`);
+      curveSvg.innerHTML = "";
+      // gridlines + y labels (a few round-ish ticks)
+      for (let g = 0; g <= 3; g++){
+        const p = ymin + (ymax - ymin) * g / 3; const y = sy(p);
+        line(curveSvg, ml, y, W_ - mr, y, "auc-zero"); curveSvg.lastChild.setAttribute("opacity", "0.18");
+        text(curveSvg, ml - 8, y + 4, fmtMoney(p), "auc-lab", "end");
+      }
+      // zero line if in range
+      if (ymin < 0 && ymax > 0){ const y = sy(0); const z = line(curveSvg, ml, y, W_ - mr, y, "auc-zero"); z.setAttribute("stroke-dasharray", "4 3"); }
+      // axes
+      line(curveSvg, ml, mt, ml, H_ - mb, "auc-zero");
+      line(curveSvg, ml, H_ - mb, W_ - mr, H_ - mb, "auc-zero");
+      for (let t = 1; t <= 3; t += 0.5){ const x = sx(t); text(curveSvg, x, H_ - mb + 18, t.toFixed(1), "auc-lab", "middle"); }
+      text(curveSvg, ml + pw / 2, H_ - 4, `${c.short} target ROAS`, "auc-lab", "middle");
+      // the curve
+      const d = "M " + xs.map((t, k) => `${sx(t).toFixed(1)},${sy(ys[k]).toFixed(1)}`).join(" L ");
+      const path = document.createElementNS(SVGNS, "path");
+      path.setAttribute("d", d); path.setAttribute("fill", "none");
+      path.setAttribute("stroke", c.color); path.setAttribute("stroke-width", "2.75");
+      path.setAttribute("stroke-linejoin", "round"); path.setAttribute("stroke-linecap", "round");
+      curveSvg.appendChild(path);
+      // optimum marker
+      const om = document.createElementNS(SVGNS, "circle");
+      om.setAttribute("cx", sx(bestT)); om.setAttribute("cy", sy(bestP)); om.setAttribute("r", "3.5");
+      om.setAttribute("fill", "none"); om.setAttribute("stroke", "#f97316"); om.setAttribute("stroke-width", "2");
+      curveSvg.appendChild(om);
+      // current operating point (focal's live tROAS)
+      const ct = troas[curFocal], cp = curveProfit(ct);
+      const cx = sx(ct), cy = sy(cp);
+      const vline = line(curveSvg, cx, mt, cx, H_ - mb, "auc-zero"); vline.setAttribute("opacity", "0.5");
+      const dot = document.createElementNS(SVGNS, "circle");
+      dot.setAttribute("cx", cx); dot.setAttribute("cy", cy); dot.setAttribute("r", "5");
+      dot.setAttribute("fill", c.color); dot.setAttribute("stroke", "var(--bg-secondary,#fafafa)"); dot.setAttribute("stroke-width", "1.5");
+      curveSvg.appendChild(dot);
+    }
+
+    if (CURVE){
+      curveWrap.hidden = false;
+      COMPANIES.forEach((c, k) => {
+        const btn = document.createElement("button");
+        btn.type = "button"; btn.className = "auc-cbtn"; btn.textContent = c.short;
+        btn.setAttribute("aria-pressed", k === curFocal ? "true" : "false");
+        if (k === curFocal) btn.style.background = c.color;
+        btn.addEventListener("click", () => {
+          curFocal = k;
+          curvePick.querySelectorAll(".auc-cbtn").forEach((b, j) => {
+            b.setAttribute("aria-pressed", j === k ? "true" : "false");
+            b.style.background = j === k ? COMPANIES[j].color : "";
+          });
+          updateCurve();
+        });
+        curvePick.appendChild(btn);
+      });
+    }
+
+    // ---- profit heatmap: focal company's own price x tROAS, rivals live -----
+    // Same threshold trick as the curve, one sort per price column, so each cell
+    // is exactly consistent with the table. Subsampled for speed; the grid only
+    // rebuilds when a rival slider moves (the focal's own price/tROAS just move
+    // the crosshair), and rebuilds are debounced so dragging stays smooth.
+    const hmWrap = root.querySelector(".auc-hmwrap");
+    const hmPick = root.querySelector(".auc-hmpick");
+    const hmCanvas = root.querySelector(".auc-hmcanvas");
+    const hmTip = root.querySelector(".auc-hmtip");
+    const hmFoot = root.querySelector(".auc-hmfoot");
+    const GXH = 46, GYH = 34, NHM = Math.min(N, 30000);
+    let hmFocal = 0, hmGrid = null, hmMin = 0, hmMax = 0, hmBest = null, hmSig = "", hmTimer = 0;
+    let hmRivalR = null;   // rivals' max bid per shopper (rebuilt on rival change)
+
+    function buildHeatmap(){
+      const cf = hmFocal, others = [0,1,2].filter((j) => j !== cf);
+      hmRivalR = new Float64Array(NHM);
+      const pay = new Float64Array(NHM);
+      for (let i = 0; i < NHM; i++){
+        let R = 0;
+        for (const j of others){ const b = EV[j][i] / troas[j] * NOISE[j][i]; if (b > R) R = b; }
+        hmRivalR[i] = R; pay[i] = Math.max(R, RESERVE);
+      }
+      hmGrid = new Float64Array(GXH * GYH); hmMin = Infinity; hmMax = -Infinity; hmBest = null;
+      const thr = new Float64Array(NHM), g = new Float64Array(NHM), idx = new Int32Array(NHM);
+      const scale = N / NHM;
+      for (let ix = 0; ix < GXH; ix++){
+        const price = PMIN + (PMAX - PMIN) * ix / (GXH - 1), margin = price - COST;
+        for (let i = 0; i < NHM; i++){
+          const pc = curveAt(W[i], price), fb = pc * price * NOISE[cf][i];
+          const winThr = hmRivalR[i] > 0 ? fb / hmRivalR[i] : Infinity;
+          thr[i] = Math.min(winThr, fb / RESERVE);
+          g[i] = (UCONV[i] < pc ? margin : 0) - pay[i];
+          idx[i] = i;
+        }
+        idx.sort((a, b) => thr[a] - thr[b]);
+        const thrS = new Float64Array(NHM), gSuf = new Float64Array(NHM + 1);
+        for (let k = 0; k < NHM; k++) thrS[k] = thr[idx[k]];
+        for (let k = NHM - 1; k >= 0; k--) gSuf[k] = gSuf[k + 1] + g[idx[k]];
+        for (let iy = 0; iy < GYH; iy++){
+          const t = TMIN + (TMAX - TMIN) * iy / (GYH - 1);
+          let lo = 0, hi = NHM;
+          while (lo < hi){ const m = (lo + hi) >> 1; if (thrS[m] <= t) lo = m + 1; else hi = m; }
+          const p = gSuf[lo] * scale;
+          hmGrid[iy * GXH + ix] = p;
+          if (p < hmMin) hmMin = p;
+          if (p > hmMax){ hmMax = p; hmBest = { ix, iy, price, troas: t, p }; }
+        }
+      }
+    }
+
+    const hmDark = () => document.documentElement.classList.contains("dark");
+    function hmLerp(a, b, t){ return [a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t, a[2]+(b[2]-a[2])*t]; }
+    function hmColor(v){
+      const neg = hmDark() ? [217,89,38] : [214,74,42];
+      const mid = hmDark() ? [56,56,53]  : [240,239,236];
+      const pos = hmDark() ? [57,135,229] : [42,120,214];
+      const span = Math.max(Math.abs(hmMin), Math.abs(hmMax), 1e-9);
+      const t = Math.max(-1, Math.min(1, v / span));
+      const c = t < 0 ? hmLerp(mid, neg, -t) : hmLerp(mid, pos, t);
+      return `rgb(${c[0]|0},${c[1]|0},${c[2]|0})`;
+    }
+    function drawHeatmap(){
+      if (!hmGrid) return;
+      const ctx = hmCanvas.getContext("2d");
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const cssW = Math.min(root.querySelector(".auc-hmstage").clientWidth || 640, 680);
+      const cssH = Math.round(cssW * 0.56);
+      hmCanvas.style.height = cssH + "px";
+      hmCanvas.width = Math.round(cssW * dpr); hmCanvas.height = Math.round(cssH * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const padL = 50, padB = 32, padT = 6, padR = 6;
+      const plotW = cssW - padL - padR, plotH = cssH - padT - padB;
+      const cw = plotW / GXH, ch = plotH / GYH;
+      for (let iy = 0; iy < GYH; iy++) for (let ix = 0; ix < GXH; ix++){
+        ctx.fillStyle = hmColor(hmGrid[iy * GXH + ix]);
+        ctx.fillRect(padL + ix * cw, padT + (GYH - 1 - iy) * ch, cw + 0.6, ch + 0.6);
+      }
+      if (hmBest){
+        const mx = padL + (hmBest.ix + 0.5) * cw, my = padT + (GYH - 1 - hmBest.iy + 0.5) * ch;
+        ctx.strokeStyle = "#f97316"; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(mx, my, 6, 0, 2*Math.PI); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(mx-10,my); ctx.lineTo(mx+10,my); ctx.moveTo(mx,my-10); ctx.lineTo(mx,my+10); ctx.stroke();
+      }
+      // current operating point (focal's live price + tROAS) as a white ring
+      const cpx = padL + ((priceArr[hmFocal] - PMIN) / (PMAX - PMIN)) * plotW;
+      const cpy = padT + plotH - ((troas[hmFocal] - TMIN) / (TMAX - TMIN)) * plotH;
+      ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(cpx, cpy, 5, 0, 2*Math.PI); ctx.stroke();
+      ctx.strokeStyle = "#000000"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(cpx, cpy, 6.5, 0, 2*Math.PI); ctx.stroke();
+      // axes
+      const ink = (getComputedStyle(root).getPropertyValue("--text-muted") || "#71717a").trim() || "#71717a";
+      ctx.fillStyle = ink; ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
+      ctx.textAlign = "center"; ctx.textBaseline = "top";
+      for (let p = 10; p <= PMAX; p += 10){ const x = padL + ((p - PMIN)/(PMAX-PMIN))*plotW; ctx.fillText("$"+p, x, padT+plotH+6); }
+      ctx.fillText(COMPANIES[hmFocal].short + " price", padL + plotW/2, padT + plotH + 19);
+      ctx.textAlign = "right"; ctx.textBaseline = "middle";
+      for (let t = 1; t <= 3; t += 0.5){ const y = padT+plotH-((t-TMIN)/(TMAX-TMIN))*plotH; ctx.fillText(t.toFixed(1), padL-6, y); }
+      ctx.save(); ctx.translate(12, padT+plotH/2); ctx.rotate(-Math.PI/2); ctx.textAlign="center"; ctx.textBaseline="top"; ctx.fillText("target ROAS", 0, 0); ctx.restore();
+      hmCanvas._geo = { padL, padT, plotW, plotH };
+    }
+    function updateHmFoot(){
+      const c = COMPANIES[hmFocal];
+      hmFoot.innerHTML = `<strong style="color:${c.color}">${c.short}</strong>'s best response right now: `
+        + `price $${hmBest.price.toFixed(0)}, tROAS ${hmBest.troas.toFixed(2)} (${fmtMoney(hmBest.p)}). `
+        + `White ring = its current setting; move a rival's sliders and the landscape shifts.`;
+    }
+    function updateHeatmap(){
+      if (!HEATMAP) return;
+      const sig = hmFocal + "|" + troas.map((t,j) => j===hmFocal ? "x" : t.toFixed(2)).join(",")
+                + "|" + priceArr.map((p,j) => j===hmFocal ? "x" : p.toFixed(0)).join(",");
+      if (sig !== hmSig){
+        hmSig = sig; hmFoot.textContent = "updating landscape…";
+        clearTimeout(hmTimer);
+        hmTimer = setTimeout(() => { buildHeatmap(); drawHeatmap(); updateHmFoot(); }, 90);
+      } else {
+        drawHeatmap();   // focal's own sliders just move the crosshair
+      }
+    }
+    if (HEATMAP){
+      hmWrap.hidden = false;
+      COMPANIES.forEach((c, k) => {
+        const btn = document.createElement("button");
+        btn.type = "button"; btn.className = "auc-cbtn"; btn.textContent = c.short;
+        btn.setAttribute("aria-pressed", k === hmFocal ? "true" : "false");
+        if (k === hmFocal) btn.style.background = c.color;
+        btn.addEventListener("click", () => {
+          hmFocal = k;
+          hmPick.querySelectorAll(".auc-cbtn").forEach((b, j) => {
+            b.setAttribute("aria-pressed", j === k ? "true" : "false");
+            b.style.background = j === k ? COMPANIES[j].color : "";
+          });
+          hmSig = ""; updateHeatmap();
+        });
+        hmPick.appendChild(btn);
+      });
+      hmCanvas.addEventListener("mousemove", (e) => {
+        const geo = hmCanvas._geo; if (!geo || !hmGrid) return;
+        const r = hmCanvas.getBoundingClientRect();
+        const x = e.clientX - r.left, y = e.clientY - r.top;
+        const ix = Math.floor((x - geo.padL) / (geo.plotW / GXH));
+        const iy = GYH - 1 - Math.floor((y - geo.padT) / (geo.plotH / GYH));
+        if (ix < 0 || ix >= GXH || iy < 0 || iy >= GYH){ hmTip.style.opacity = 0; return; }
+        const price = PMIN + (PMAX - PMIN) * ix / (GXH - 1);
+        const t = TMIN + (TMAX - TMIN) * iy / (GYH - 1);
+        hmTip.textContent = `$${price.toFixed(0)}, tROAS ${t.toFixed(2)} → ${fmtMoney(hmGrid[iy*GXH+ix])}`;
+        hmTip.style.left = x + "px"; hmTip.style.top = y + "px"; hmTip.style.opacity = 1;
+      });
+      hmCanvas.addEventListener("mouseleave", () => { hmTip.style.opacity = 0; });
+      if (window.ResizeObserver){ new ResizeObserver(() => drawHeatmap()).observe(root.querySelector(".auc-hmstage")); }
+    }
+
+    function fmtMoney(v){ return (v < 0 ? "-$" : "$") + Math.abs(v).toLocaleString(undefined, {maximumFractionDigits: 0}); }
+
+    function renderBars(rows){
+      const BW = 680, rowH = 26, top = 6, H = top + rows.length * rowH + 6;
+      const nameW = 88, valW = 78, x0 = nameW, x1 = BW - valW;
+      const maxAbs = Math.max(1, ...rows.map((r) => Math.abs(r.profit)));
+      const hasNeg = rows.some((r) => r.profit < 0);
+      const zeroX = hasNeg ? x0 + ((x1 - x0) * maxAbs) / (2 * maxAbs) : x0; // center if negatives exist
+      const scale = hasNeg ? (x1 - x0) / (2 * maxAbs) : (x1 - x0) / maxAbs;
+      barsSvg.setAttribute("viewBox", `0 0 ${BW} ${H}`);
+      barsSvg.innerHTML = "";
+      // zero baseline
+      line(barsSvg, zeroX, top, zeroX, H - 6, "auc-zero");
+      rows.forEach((r, i) => {
+        const c = COMPANIES[i], y = top + i * rowH, bh = 15, by = y + (rowH - bh) / 2;
+        text(barsSvg, nameW - 8, by + bh - 3, c.short, "auc-lab", "end", 700, c.color);
+        const len = r.profit * scale;
+        const bx = r.profit >= 0 ? zeroX : zeroX + len;
+        rect(barsSvg, bx, by, Math.abs(len), bh, r.profit >= 0 ? c.color : "#d9534f");
+        text(barsSvg, x1 + 6, by + bh - 3, fmtMoney(r.profit), "auc-lab", "start", 700,
+             r.profit >= 0 ? c.color : "#d9534f");
+      });
+    }
+
+    function render(){
+      const rows = compute();
+      COMPANIES.forEach((c, k) => {
+        valEls[k].textContent = troas[k].toFixed(1);
+        if (PRICE_LEVER) priceValEls[k].textContent = `$${priceArr[k].toFixed(0)} (m $${marginArr[k].toFixed(0)})`;
+      });
+      tbody.innerHTML = "";
+      rows.forEach((r, k) => {
+        const c = COMPANIES[k];
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          `<td><span class="auc-name" style="color:${c.color}">${c.short}</span></td>` +
+          `<td>${(r.share * 100).toFixed(0)}%</td>` +
+          `<td>$${r.cpc.toFixed(2)}</td>` +
+          `<td>${(r.convRate * 100).toFixed(0)}%</td>` +
+          `<td>${fmtMoney(r.profit)}</td>`;
+        tbody.appendChild(tr);
+      });
+      renderBars(rows);
+      updateCurve();
+      updateHeatmap();
+      const totProfit = rows.reduce((s, r) => s + r.profit, 0);
+      const totClicks = rows.reduce((s, r) => s + r.clicks, 0);
+      foot.textContent = `Across ${N.toLocaleString()} shoppers: ${Math.round(totClicks).toLocaleString()} clicks sold, `
+        + `${fmtMoney(totProfit)} total profit.`;
+    }
+
+    // helpers
+    function line(p, x1, y1, x2, y2, cls){
+      const el = document.createElementNS(SVGNS, "line");
+      el.setAttribute("x1", x1); el.setAttribute("y1", y1);
+      el.setAttribute("x2", x2); el.setAttribute("y2", y2);
+      el.setAttribute("class", cls); p.appendChild(el); return el;
+    }
+    function text(p, x, y, str, cls, anchor, weight, fill){
+      const el = document.createElementNS(SVGNS, "text");
+      el.setAttribute("x", x); el.setAttribute("y", y);
+      el.setAttribute("text-anchor", anchor); el.setAttribute("class", cls);
+      if (weight) el.setAttribute("font-weight", weight);
+      if (fill) el.setAttribute("fill", fill);
+      el.textContent = str; p.appendChild(el); return el;
+    }
+    function rect(p, x, y, w, h, fill){
+      const el = document.createElementNS(SVGNS, "rect");
+      el.setAttribute("x", x); el.setAttribute("y", y);
+      el.setAttribute("width", w); el.setAttribute("height", h);
+      el.setAttribute("rx", 3); el.setAttribute("fill", fill); p.appendChild(el); return el;
+    }
+
+    render();
+  }
+
+  document.querySelectorAll("[data-auc]").forEach(init);
+</script>

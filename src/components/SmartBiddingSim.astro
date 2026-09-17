@@ -1,0 +1,313 @@
+---
+// Smart-bidding sampling sim. Every tick it draws a fresh shopper and shows
+// Google's *estimated* conversion curve for them: a smooth, uncertain
+// probability-of-conversion over price (a soft threshold around their budget,
+// never a hard yes/no). Averaged over many shoppers these curves converge onto
+// the market survival curve. The ghost curve is the model's own Monte-Carlo
+// mean, so the running average provably lands on it.
+// Self-contained, vanilla JS. Usage: <SmartBiddingSim />
+interface Props { pi?: number; lambda?: number; fuzz?: number }
+const { pi = 0.35, lambda = 10, fuzz = 2.5 } = Astro.props;
+---
+
+<div class="sbsim" data-sbsim data-pi={pi} data-lambda={lambda} data-fuzz={fuzz}>
+  <div class="sb-bar">
+    <span class="sb-legend">
+      <span class="sb-k sb-k-ghost">— market curve</span>
+      <span class="sb-k sb-k-user">— this shopper</span>
+    </span>
+    <span class="sb-controls">
+      <button type="button" class="sb-btn sb-toggle">Pause</button>
+      <button type="button" class="sb-btn sb-step">Next</button>
+    </span>
+  </div>
+  <svg class="sb-plot" xmlns="http://www.w3.org/2000/svg" role="img"
+       aria-label="Simulation: each shopper's smooth estimated conversion curve is sampled and averaged toward the market survival curve, with each company's running conversion rate marked on the y-axis."></svg>
+  <svg class="sb-bars" xmlns="http://www.w3.org/2000/svg" role="img"
+       aria-label="Value of the current shopper's click to each company: conversion probability times that company's margin."></svg>
+</div>
+
+<style is:global>
+  .sbsim {
+    margin: 1.75rem 0;
+    padding: 1rem;
+    border: 1px solid var(--border-color, #e4e4e7);
+    border-radius: 12px;
+    background: var(--bg-secondary, #fafafa);
+  }
+  .sb-bar { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem; flex-wrap: wrap; }
+  .sb-legend { display: flex; gap: 1rem; font-size: 0.85rem; font-weight: 700; }
+  .sb-k-ghost { color: #f97316; }
+  .sb-k-user  { color: var(--text-secondary, #3f3f46); }
+  .sb-controls { display: flex; gap: 0.5rem; margin-left: auto; }
+  .sb-btn {
+    font: inherit; font-weight: 600; cursor: pointer;
+    color: var(--text-primary, #18181b);
+    background: var(--bg-primary, #fff);
+    border: 1.5px solid var(--border-color, #e4e4e7);
+    border-radius: 9px; padding: 0.3rem 0.7rem;
+  }
+  .sb-btn:active { transform: translateY(1px); }
+  .sb-plot { width: 100%; height: auto; max-width: 680px; margin: 0 auto; display: block; }
+  .sb-bars { width: 100%; height: auto; max-width: 680px; margin: 0.35rem auto 0; display: block; }
+
+  .sb-grid { stroke: var(--border-color, #e4e4e7); stroke-width: 1; opacity: 0.6; }
+  .sb-axis { stroke: var(--text-muted, #71717a); stroke-width: 1.5; opacity: 0.7; }
+  .sb-tick { stroke: var(--text-muted, #71717a); stroke-width: 1; opacity: 0.5; }
+  .sb-lab  { fill: var(--text-muted, #71717a); font-size: 12px; font-family: ui-sans-serif, system-ui, sans-serif; }
+  .sb-read { fill: var(--text-primary, #18181b); font-size: 12.5px; font-weight: 700;
+             font-family: ui-sans-serif, system-ui, sans-serif; }
+  .sb-ghost { stroke: #f97316; stroke-width: 2; stroke-dasharray: 5 4; fill: none; opacity: 0.55; }
+  .sb-avg   { stroke: #f97316; stroke-width: 2.75; fill: none; stroke-linejoin: round; stroke-linecap: round; }
+  .sb-user  { stroke: var(--text-secondary, #3f3f46); stroke-width: 2.5; fill: none;
+              stroke-linejoin: round; stroke-linecap: round; }
+  .sb-userfill { fill: var(--text-secondary, #3f3f46); opacity: 0.07; }
+</style>
+
+<script>
+  const SVGNS = "http://www.w3.org/2000/svg";
+  const PMAX = 40;
+  const COMPANIES = [
+    { name: "Planetary Scrap",     price: 12, margin: 7,  color: "#5ba3c7" },
+    { name: "Orbit Iron",          price: 17, margin: 12, color: "#7fb069" },
+    { name: "Celestial Specimens", price: 24, margin: 19, color: "#b088c9" },
+  ];
+  const MAXMARGIN = 19;
+
+  function init(root){
+    const pi = parseFloat(root.dataset.pi || "0.35");
+    const lambda = parseFloat(root.dataset.lambda || "40");
+    const fuzz = parseFloat(root.dataset.fuzz || "6");
+
+    const svg = root.querySelector(".sb-plot");
+    const barsSvg = root.querySelector(".sb-bars");
+    const toggleBtn = root.querySelector(".sb-toggle");
+    const stepBtn = root.querySelector(".sb-step");
+
+    // geometry
+    const W = 680, H = 380, ml = 54, mr = 18, mt = 26, mb = 46;
+    const pw = W - ml - mr, ph = H - mt - mb;
+    const sx = (p) => ml + (p / PMAX) * pw;
+    const sy = (v) => mt + (1 - v) * ph;
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+
+    // drawing grid
+    const G = 121;
+    const gp = Array.from({length: G}, (_, i) => (PMAX * i) / (G - 1));
+
+    // --- generative model -------------------------------------------------
+    // logistic soft threshold around a budget w; smooth, always in (0,1)
+    const curveAt = (w, p) => 1 / (1 + Math.exp((p - w) / fuzz));
+    // one continuous budget distribution: Exp(mean=lambda) shifted left so that
+    // a share pi ends up below zero (won't buy even when cheap). No browser class
+    // and no label Google could never observe -- just a continuum of interest.
+    const shift = -lambda * Math.log(1 - pi);
+    const sampleBudget = () => -lambda * Math.log(1 - Math.random()) - shift;
+
+    // ghost = Monte-Carlo mean of the model, so the running average lands on it
+    const ghost = new Float64Array(G);
+    const M = 20000;
+    for (let m = 0; m < M; m++){ const w = sampleBudget(); for (let i = 0; i < G; i++) ghost[i] += curveAt(w, gp[i]); }
+    for (let i = 0; i < G; i++) ghost[i] /= M;
+
+    // accumulators
+    const sum = new Float64Array(G);
+    const compSum = COMPANIES.map(() => 0);
+    let n = 0;
+
+    // --- static layer -----------------------------------------------------
+    function buildStatic(){
+      svg.innerHTML = "";
+      for (let k = 0; k <= 4; k++){
+        const v = k / 4, y = sy(v);
+        line(ml, y, W - mr, y, "sb-grid");
+        text(ml - 9, y + 4, `${v * 100}%`, "sb-lab", "end");
+      }
+      line(ml, mt, ml, H - mb, "sb-axis");
+      line(ml, H - mb, W - mr, H - mb, "sb-axis");
+      for (let p = 0; p <= PMAX; p += 10){
+        const x = sx(p);
+        line(x, H - mb, x, H - mb + 5, "sb-tick");
+        text(x, H - mb + 20, `$${p}`, "sb-lab", "middle");
+      }
+      text(ml + pw / 2, H - 6, "Price", "sb-lab", "middle");
+      text(ml - 40, mt + ph / 2, "P(convert)", "sb-lab", "middle",
+           `rotate(-90 ${ml - 40} ${mt + ph / 2})`);
+      COMPANIES.forEach((c) => {
+        const x = sx(c.price);
+        const g = line(x, mt, x, H - mb, null);
+        g.setAttribute("stroke", c.color); g.setAttribute("stroke-width", "1.5");
+        g.setAttribute("stroke-dasharray", "4 4"); g.setAttribute("opacity", "0.5");
+        const t = text(x, mt - 8, c.name.split(" ")[0], "sb-lab", "middle");
+        t.setAttribute("fill", c.color); t.setAttribute("font-weight", "700");
+      });
+      pathArr(gp.map((p, i) => [sx(p), sy(ghost[i])]), "sb-ghost");
+    }
+
+    // --- companion bar strip: value of this shopper's click per company ---
+    const BW = 680, BH = 138, bx0 = 142, bx1 = 560, barH = 15;
+    const bx = (v) => bx0 + (v / MAXMARGIN) * (bx1 - bx0);
+    const rowY = (i) => 42 + i * 27;
+    let barsDyn = document.createElementNS(SVGNS, "g");
+
+    function buildBars(){
+      barsSvg.setAttribute("viewBox", `0 0 ${BW} ${BH}`);
+      barsSvg.innerHTML = "";
+      const title = btext(bx0, 18, "Value of this click", "sb-lab", "start", 700, "var(--text-primary,#18181b)");
+      title.setAttribute("font-size", "15px");
+      // $ scale ticks (below the last bar)
+      for (let v = 0; v <= MAXMARGIN; v += 5){
+        bline(bx(v), BH - 18, bx(v), BH - 14, "sb-tick");
+        btext(bx(v), BH - 4, `$${v}`, "sb-lab", "middle");
+      }
+      COMPANIES.forEach((c, i) => {
+        const y = rowY(i);
+        btext(bx0 - 10, y + barH - 3, c.name.split(" ")[0], "sb-lab", "end", 700, c.color);
+        // faint track = the company's full margin (the ceiling on value)
+        rect(barsSvg, bx0, y, bx(c.margin) - bx0, barH, c.color, 0.16);
+      });
+      barsSvg.appendChild(barsDyn);
+    }
+
+    function updateBars(w){
+      barsDyn.remove();
+      barsDyn = document.createElementNS(SVGNS, "g");
+      COMPANIES.forEach((c, i) => {
+        const y = rowY(i);
+        const val = curveAt(w, c.price) * c.margin;   // p_conv * margin
+        rect(barsDyn, bx0, y, Math.max(0, bx(val) - bx0), barH, c.color, 1);
+        barsDyn.appendChild(mkText(bx(c.margin) + 8, y + barH - 3, `$${val.toFixed(2)}`, "sb-lab", "start", 700, c.color));
+      });
+      barsSvg.appendChild(barsDyn);
+    }
+
+    // --- dynamic layer (main plot) ----------------------------------------
+    let dyn = document.createElementNS(SVGNS, "g");
+    svg.appendChild(dyn);
+
+    function render(w){
+      const uc = gp.map((p) => curveAt(w, p));
+      for (let i = 0; i < G; i++) sum[i] += uc[i];
+      COMPANIES.forEach((c, ci) => { compSum[ci] += curveAt(w, c.price); });
+      n += 1;
+
+      dyn.remove();
+      dyn = document.createElementNS(SVGNS, "g");
+
+      // this shopper's smooth curve + faint fill
+      const userPts = gp.map((p, i) => [sx(p), sy(uc[i])]);
+      pathIn(dyn, [[sx(0), sy(0)], ...userPts, [sx(PMAX), sy(0)]], "sb-userfill", true);
+      pathIn(dyn, userPts, "sb-user");
+
+      // company dots on this shopper's curve (fractional heights now)
+      COMPANIES.forEach((c) => {
+        const cy = sy(curveAt(w, c.price));
+        const dot = circle(sx(c.price), cy, 5);
+        dot.setAttribute("fill", c.color); dot.setAttribute("stroke", "var(--bg-secondary,#fafafa)");
+        dot.setAttribute("stroke-width", "1.5");
+        dyn.appendChild(dot);
+      });
+
+      // running average curve
+      pathIn(dyn, gp.map((p, i) => [sx(p), sy(sum[i] / n)]), "sb-avg");
+
+      // per-company y-axis markers at running conversion rate
+      COMPANIES.forEach((c, ci) => {
+        const rate = compSum[ci] / n, y = sy(rate);
+        const tick = line(ml - 6, y, ml, y, null);
+        tick.setAttribute("stroke", c.color); tick.setAttribute("stroke-width", "2.5");
+        dyn.appendChild(tick);
+        dyn.appendChild(styled(circle(ml, y, 4.5), c.color));
+        const lab = text(sx(c.price) + 8, y - 6, `${(rate * 100).toFixed(0)}%`, "sb-lab", "start");
+        lab.setAttribute("fill", c.color); lab.setAttribute("font-weight", "700");
+        dyn.appendChild(lab);
+      });
+
+      // fixed-position readouts inside the SVG (no page reflow)
+      readout(dyn, ml + 6, mt + 16, `n = ${n} shopper${n === 1 ? "" : "s"}`);
+      readout(dyn, ml + 6, mt + 34, `this shopper — peak interest ${(uc[0] * 100).toFixed(0)}%`);
+
+      svg.appendChild(dyn);
+      updateBars(w);
+    }
+
+    // --- helpers ----------------------------------------------------------
+    function line(x1, y1, x2, y2, cls){
+      const el = document.createElementNS(SVGNS, "line");
+      el.setAttribute("x1", x1); el.setAttribute("y1", y1);
+      el.setAttribute("x2", x2); el.setAttribute("y2", y2);
+      if (cls) el.setAttribute("class", cls);
+      svg.appendChild(el); return el;
+    }
+    function text(x, y, str, cls, anchor, transform){
+      const el = document.createElementNS(SVGNS, "text");
+      el.setAttribute("x", x); el.setAttribute("y", y);
+      el.setAttribute("text-anchor", anchor); el.setAttribute("class", cls);
+      if (transform) el.setAttribute("transform", transform);
+      el.textContent = str; svg.appendChild(el); return el;
+    }
+    function readout(parent, x, y, str){
+      const el = document.createElementNS(SVGNS, "text");
+      el.setAttribute("x", x); el.setAttribute("y", y);
+      el.setAttribute("text-anchor", "start"); el.setAttribute("class", "sb-read");
+      el.textContent = str; parent.appendChild(el); return el;
+    }
+    function circle(cx, cy, r){
+      const el = document.createElementNS(SVGNS, "circle");
+      el.setAttribute("cx", cx); el.setAttribute("cy", cy); el.setAttribute("r", r);
+      return el;
+    }
+    function styled(el, fill){ el.setAttribute("fill", fill); return el; }
+    function mkText(x, y, str, cls, anchor, weight, fill){
+      const el = document.createElementNS(SVGNS, "text");
+      el.setAttribute("x", x); el.setAttribute("y", y);
+      el.setAttribute("text-anchor", anchor); el.setAttribute("class", cls);
+      if (weight) el.setAttribute("font-weight", weight);
+      if (fill) el.setAttribute("fill", fill);
+      el.textContent = str; return el;
+    }
+    function btext(x, y, str, cls, anchor, weight, fill){
+      const el = mkText(x, y, str, cls, anchor, weight, fill); barsSvg.appendChild(el); return el;
+    }
+    function bline(x1, y1, x2, y2, cls){
+      const el = document.createElementNS(SVGNS, "line");
+      el.setAttribute("x1", x1); el.setAttribute("y1", y1);
+      el.setAttribute("x2", x2); el.setAttribute("y2", y2);
+      if (cls) el.setAttribute("class", cls); barsSvg.appendChild(el); return el;
+    }
+    function rect(parent, x, y, w, h, fill, opacity){
+      const el = document.createElementNS(SVGNS, "rect");
+      el.setAttribute("x", x); el.setAttribute("y", y);
+      el.setAttribute("width", w); el.setAttribute("height", h);
+      el.setAttribute("rx", 3); el.setAttribute("fill", fill); el.setAttribute("opacity", opacity);
+      parent.appendChild(el); return el;
+    }
+    function pathArr(pts, cls){
+      const el = document.createElementNS(SVGNS, "path");
+      el.setAttribute("d", "M " + pts.map((p) => p.join(",")).join(" L "));
+      el.setAttribute("class", cls); svg.appendChild(el); return el;
+    }
+    function pathIn(parent, pts, cls, close){
+      const el = document.createElementNS(SVGNS, "path");
+      el.setAttribute("d", "M " + pts.map((p) => p.join(",")).join(" L ") + (close ? " Z" : ""));
+      el.setAttribute("class", cls); parent.appendChild(el); return el;
+    }
+
+    const drawOne = () => render(sampleBudget());
+
+    // playback
+    const reduced = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    let timer = null;
+    function play(){ if (!timer){ timer = setInterval(drawOne, 1900); toggleBtn.textContent = "Pause"; } }
+    function pause(){ if (timer){ clearInterval(timer); timer = null; } toggleBtn.textContent = "Play"; }
+    toggleBtn.addEventListener("click", () => (timer ? pause() : play()));
+    stepBtn.addEventListener("click", () => { pause(); drawOne(); });
+
+    buildStatic();
+    buildBars();
+    drawOne();
+    if (!reduced) play(); else toggleBtn.textContent = "Play";
+  }
+
+  document.querySelectorAll("[data-sbsim]").forEach(init);
+</script>
