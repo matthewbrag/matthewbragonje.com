@@ -2,7 +2,7 @@
 title: "Good Models Aren't Enough"
 pubDate: 'Jun 11 2026'
 tags: ['Machine Learning']
-description: "My experience taking a machine learning project from idea to production"
+description: "Taking a machine learning model into production taught me to look beyond accuracy: at how data is generated, how people use predictions, and what makes a system worth adopting."
 ---
 
 A few months ago, I became interested in applying machine learning (ML) at work. I expected the challenge to be technical: find a promising business problem, build an accurate model, present results, and watch the organization adopt it.

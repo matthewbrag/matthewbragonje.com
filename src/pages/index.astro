@@ -20,7 +20,7 @@ const formatDate = (date: Date) => {
 ---
 
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 	<head>
 		<BaseHead title={SITE_TITLE} description={SITE_DESCRIPTION} />
 		<style>
@@ -30,7 +30,7 @@ const formatDate = (date: Date) => {
 
 			main {
 				width: 100%;
-				max-width: 640px;
+				max-width: 760px;
 				margin: 0 auto;
 				padding: 0 1.5rem;
 			}
@@ -79,7 +79,7 @@ const formatDate = (date: Date) => {
 
 			.intro-description {
 				font-size: 0.9rem;
-				color: var(--text-muted);
+				color: var(--text-secondary);
 				line-height: 1.7;
 				margin: 0;
 			}
@@ -151,51 +151,36 @@ const formatDate = (date: Date) => {
 
 
 			.post-item {
-				padding: 1rem 0;
-				border-bottom: 1px solid rgba(229, 231, 235, 0.5);
-				transition: background-color 0.15s ease;
-			}
-
-			.post-item:last-child {
-				border-bottom: none;
-			}
-
-			.post-item:hover {
-				background-color: rgba(249, 115, 22, 0.06);
-			}
-
-			.post-link {
-				display: flex;
-				align-items: center;
-				gap: 1.5rem;
-				text-decoration: none;
-				padding-left: 0;
-			}
-
-			.post-date {
-				font-size: 0.8rem;
-				color: var(--text-muted);
-				min-width: 70px;
-				flex-shrink: 0;
-				text-align: left;
-				font-weight: 500;
-				letter-spacing: 0.02em;
-			}
-
-			.post-title {
-				font-size: 0.95rem;
-				font-weight: 500;
-				color: var(--text-primary);
-				margin: 0;
-				line-height: 1.5;
-				transition: color 0.15s ease;
-				text-align: left;
-				flex: 1;
-			}
-
-			.post-link:hover .post-title {
-				color: var(--accent);
-			}
+                padding: 1.75rem 0;
+                border-bottom: 1px solid var(--border-color);
+            }
+            .post-item:last-child { border-bottom: none; }
+            .post-meta {
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
+                gap: 0.5rem 1rem;
+                margin-bottom: 0.5rem;
+                font-size: 0.8rem;
+                color: var(--text-secondary);
+            }
+            .post-tags { display: flex; flex-wrap: wrap; gap: 0.75rem; }
+            .post-title {
+                font-size: 1.25rem;
+                font-weight: 600;
+                line-height: 1.4;
+                margin: 0 0 0.625rem;
+                letter-spacing: -0.015em;
+            }
+            .post-link { color: var(--text-primary); }
+            .post-link:hover { color: var(--accent); }
+            .post-description {
+                font-size: 0.95rem;
+                line-height: 1.75;
+                color: var(--text-secondary);
+                margin: 0;
+            }
+            a:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 
 			@media (max-width: 640px) {
 				.intro-section {
@@ -212,14 +197,6 @@ const formatDate = (date: Date) => {
 				.intro-links {
 					justify-content: center;
 				}
-			}
-
-			html.dark .post-item {
-				border-bottom-color: rgba(255, 255, 255, 0.06);
-			}
-
-			html.dark .post-item:hover {
-				background-color: rgba(251, 146, 60, 0.12);
 			}
 
 			html.dark .section-link {
@@ -262,10 +239,18 @@ const formatDate = (date: Date) => {
 				<ul class="post-list">
 					{recentPosts.map((post) => (
 						<li class="post-item">
-							<a href={`/writing/${post.id}/`} class="post-link">
-								<span class="post-date">{formatDate(post.data.pubDate)}</span>
-								<h3 class="post-title">{post.data.title}</h3>
-							</a>
+                            <article>
+                                <div class="post-meta">
+                                    <time datetime={post.data.pubDate.toISOString()}>{formatDate(post.data.pubDate)}</time>
+                                    {post.data.tags && post.data.tags.length > 0 && (
+                                        <div class="post-tags">
+                                            {post.data.tags.map((tag) => <a href={`/tags/${encodeURIComponent(tag)}/`}>{tag}</a>)}
+                                        </div>
+                                    )}
+                                </div>
+                                <h3 class="post-title"><a href={`/writing/${post.id}/`} class="post-link">{post.data.title}</a></h3>
+                                {post.data.description && <p class="post-description">{post.data.description}</p>}
+                            </article>
 						</li>
 					))}
 				</ul>

@@ -2,7 +2,7 @@
 title: "Qwen 3.8 27B on 2 and 3 RTX 3090s"
 pubDate: 'Aug 16 2026'
 tags: ['Machine Learning', 'Hardware']
-description: "Running and experimenting with the latest (realistically) local Qwen model."
+description: "I benchmarked a local language model across two and three GPUs to understand what actually limits performance. Testing different PCIe paths revealed that a third GPU connected through an NVMe adapter could outperform a card in a motherboard slot."
 ---
 
 I have three RTX 3090s in a single machine. On paper that is 72 GB of VRAM and a lot of compute, more than enough to run a 27-billion-parameter model comfortably, and it's pretty straightforward to run it quickly, so I thought I would share my results. I'm very impressed and excited for the future of local AI.
