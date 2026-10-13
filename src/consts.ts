@@ -2,10 +2,10 @@
 // You can import this data from anywhere in your site by using the `import` keyword.
 
 export const SITE_TITLE = 'Matthew Bragonje';
-export const SITE_DESCRIPTION = 'A clean, modern blog theme with excellent readability and beautiful typography.';
+export const SITE_DESCRIPTION = "Matthew Bragonje's writing on machine learning, causal inference, and systems — production ML, LLM internals, and the occasional hardware detour.";
 export const AUTHOR_NAME = 'Matthew Bragonje';
-export const AUTHOR_TITLE = 'Software Engineer and Experimentalist';
-export const AUTHOR_DESCRIPTION = 'Software engineer interested in machine learning and real-world engineering. I write about software, technical projects, exploration, and the occasional idea that seems worth investigating.';
+export const AUTHOR_TITLE = 'Engineer & Experimentalist';
+export const AUTHOR_DESCRIPTION = 'I like probing machine learning systems until I understand why they actually work — causal inference, production ML, and the occasional LLM hacked open to see what\'s inside. I write about those investigations.';
 
 export const SOCIAL_LINKS = {
   github: 'https://github.com/matthewbrag',
