@@ -1,6 +1,6 @@
 ---
 import '../styles/global.css';
-import { SITE_TITLE } from '../consts';
+import { SITE_TITLE, AUTHOR_NAME } from '../consts';
 import { Font } from 'astro:assets';
 
 interface Props {
@@ -41,13 +41,15 @@ const { title, description, image = FALLBACK_IMAGE, date } = Astro.props;
 <title>{title}</title>
 <meta name="title" content={title} />
 <meta name="description" content={description} />
+<meta name="author" content={AUTHOR_NAME} />
 {date && <meta name="date" content={typeof date === 'object' ? date.toISOString().split('T')[0] : date} />}
 
-<meta property="og:type" content="website" />
+<meta property="og:type" content={date ? "article" : "website"} />
 <meta property="og:url" content={Astro.url} />
 <meta property="og:title" content={title} />
 <meta property="og:description" content={description} />
 <meta property="og:image" content={new URL(image, Astro.url)} />
+{date && <meta property="article:author" content={AUTHOR_NAME} />}
 
 <meta property="twitter:card" content="summary_large_image" />
 <meta property="twitter:url" content={Astro.url} />

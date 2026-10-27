@@ -10,6 +10,8 @@ import rehypeWrapTables from './src/plugins/rehype-wrap-tables';
 
 export default defineConfig({
 	site: 'https://matthewbragonje.com',
+	// the article's slug was renamed to match its title after it was first published
+	redirects: { '/writing/entropy-isnt-enough': '/writing/uncertainty-is-not-a-compass' },
 	vite: {},
 	integrations: [
 		expressiveCode({
