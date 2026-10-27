@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Fork Explorer</title>
+<meta name="description" content="Token-level heat maps of where an LLM's reasoning might fork: logit entropy, an outcome probe, and their product, on real Qwen3 traces, plus a live in-browser demo.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<script>
+  // Same theme rule as the main site: stored choice, else dark between 6pm and 6am.
+  (function () {
+    var t = null;
+    try { t = localStorage.getItem('astro-theme'); } catch (e) {}
+    var h = new Date().getHours();
+    if (t === 'dark' || ((!t || t === 'auto') && (h >= 18 || h < 6))) document.documentElement.classList.add('dark');
+  })();
+</script>
+<style>
+  :root {
+    --accent: #F97316; --heat: 249 115 22;
+    --ink: #18181B; --ink-2: #3F3F46; --muted: #71717A;
+    --bg: #FFFFFF; --bg-2: #FAFAFA; --bg-3: #F4F4F5; --line: #E4E4E7;
+    --ok: #15803d; --bad: #b91c1c;
+    --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    color-scheme: light;
+  }
+  html.dark {
+    --accent: #FB923C; --heat: 251 146 60;
+    --ink: #FAFAFA; --ink-2: #D4D4D8; --muted: #A1A1AA;
+    --bg: #18181B; --bg-2: #27272A; --bg-3: #3F3F46; --line: #3F3F46;
+    --ok: #4ade80; --bad: #f87171;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.6 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    padding: max(20px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) 40px max(16px, env(safe-area-inset-left, 0px));
+  }
+  .wrap { max-width: 1120px; margin: 0 auto; }
+  a { color: var(--accent); }
+  button, select, textarea { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  h1 { font-size: 1.6rem; margin: 0.4rem 0 0.3rem; letter-spacing: -0.02em; }
+  .lede { color: var(--ink-2); max-width: 760px; margin: 0 0 1.2rem; }
+  .back { font-size: 0.85rem; text-decoration: none; }
+  .label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); font-weight: 600; }
+  .num { font-variant-numeric: tabular-nums; }
+
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 1rem; flex-wrap: wrap; }
+  .tab { background: none; border: 0; border-bottom: 2px solid transparent; padding: 8px 12px; cursor: pointer; color: var(--muted); font-weight: 600; margin-bottom: -1px; }
+  .tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+
+  .controls { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; margin-bottom: 0.8rem; }
+  select { background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; max-width: 100%; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; flex-wrap: wrap; }
+  .seg button { background: var(--bg-2); border: 0; padding: 6px 12px; cursor: pointer; font-size: 0.88rem; }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+
+  .grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: start; }
+  @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--bg-2); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .problem { white-space: pre-wrap; font-size: 0.9rem; color: var(--ink-2); margin: 0 0 0.6rem; max-height: 9.5em; overflow: auto; }
+  .meta { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 0.85rem; margin-bottom: 0.6rem; }
+  .meta b.bad { color: var(--bad); } .meta b.ok { color: var(--ok); }
+
+  .trace { white-space: pre-wrap; word-break: break-word; font-family: var(--mono); font-size: 0.82rem; line-height: 1.75; }
+  .tok { border-radius: 3px; cursor: pointer; padding: 1px 0; }
+  .tok:hover { outline: 1px solid var(--muted); }
+  .tok.sel { outline: 2px solid var(--accent); }
+  .tok.cut { text-decoration: underline dotted var(--muted); text-underline-offset: 3px; }
+  .legend { display: flex; align-items: center; gap: 8px; font-size: 0.78rem; color: var(--muted); margin: 0.4rem 0 0.8rem; }
+  .ramp { width: 120px; height: 10px; border-radius: 3px; background: linear-gradient(to right, rgb(var(--heat) / 0), rgb(var(--heat) / 0.75)); border: 1px solid var(--line); }
+
+  .insp { position: sticky; top: 12px; display: flex; flex-direction: column; gap: 12px; }
+  .insp h2 { font-size: 1rem; margin: 0; }
+  .vals { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; font-size: 0.85rem; }
+  .vals span:nth-child(odd) { color: var(--muted); }
+  .opt { display: grid; grid-template-columns: minmax(0, 1fr) 52px; gap: 2px 8px; align-items: center; font-size: 0.82rem; }
+  .opt .t { font-family: var(--mono); white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+  .bar { grid-column: 1 / -1; height: 4px; border-radius: 2px; background: var(--bg-3); overflow: hidden; margin-bottom: 4px; }
+  .bar i { display: block; height: 100%; background: var(--accent); border-radius: 2px; }
+  .br { border-top: 1px solid var(--line); padding: 6px 0; font-size: 0.82rem; }
+  .br summary { cursor: pointer; display: flex; gap: 8px; align-items: baseline; list-style: none; }
+  .br summary::-webkit-details-marker { display: none; }
+  .br .mark { font-weight: 700; width: 1.1em; }
+  .br .mark.ok { color: var(--ok); } .br .mark.bad { color: var(--bad); }
+  .br pre { white-space: pre-wrap; font-family: var(--mono); font-size: 0.75rem; color: var(--ink-2); max-height: 14em; overflow: auto; margin: 6px 0 0; }
+  .toplist button { display: flex; gap: 8px; width: 100%; text-align: left; background: none; border: 0; border-top: 1px solid var(--line); padding: 5px 0; cursor: pointer; font-size: 0.82rem; }
+  .toplist .t { font-family: var(--mono); white-space: pre; flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  .hint { font-size: 0.82rem; color: var(--muted); margin: 0; }
+
+  textarea { width: 100%; min-height: 6em; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; resize: vertical; }
+  .btn { background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 7px 14px; cursor: pointer; font-weight: 600; }
+  .btn.secondary { background: var(--bg-3); color: var(--ink); }
+  .btn:disabled { opacity: 0.5; cursor: default; }
+  .progress { height: 6px; background: var(--bg-3); border-radius: 3px; overflow: hidden; margin-top: 8px; }
+  .progress i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.2s; }
+  .notice { font-size: 0.85rem; color: var(--ink-2); background: var(--bg-3); border-radius: 8px; padding: 8px 12px; margin: 0 0 0.8rem; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a class="back" href="/writing/entropy-isnt-enough/">← Uncertainty Is Not A Compass</a>
+  <h1>Fork Explorer</h1>
+  <p class="lede">Where might a model's reasoning branch? Each token is shaded by a heuristic: <b>logit entropy</b> (how unsure the model is about its next token), the <b>outcome probe</b> (a linear probe on layer-18 hidden states predicting how much forcing a different token would change the final answer), or their <b>product</b>. Click any token to see what else the model considered there.</p>
+
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" id="tab-saved" aria-selected="true" aria-controls="saved">Saved traces · Qwen3-1.7B</button>
+    <button class="tab" role="tab" id="tab-live" aria-selected="false" aria-controls="live">Try it live · Qwen3-0.6B</button>
+  </div>
+
+  <section id="saved" role="tabpanel" aria-labelledby="tab-saved">
+    <div class="controls">
+      <label><span class="label">Problem</span><br><select id="pick"></select></label>
+      <div><span class="label">Shade by</span><br>
+        <div class="seg" id="modes">
+          <button data-mode="le" aria-pressed="false">Logit entropy</button>
+          <button data-mode="z" aria-pressed="false">Outcome probe</button>
+          <button data-mode="prod" aria-pressed="true">Outcome × entropy</button>
+        </div>
+      </div>
+    </div>
+    <div class="grid">
+      <div class="card">
+        <p class="problem" id="q"></p>
+        <div class="meta" id="meta"></div>
+        <div class="legend"><span>low</span><span class="ramp"></span><span>high</span><span>· dotted underline = forced branches available</span></div>
+        <div class="trace" id="trace" aria-label="Model trace, shaded by the selected heuristic"></div>
+      </div>
+      <aside class="card insp" id="insp"></aside>
+    </div>
+  </section>
+
+  <section id="live" role="tabpanel" aria-labelledby="tab-live" hidden>
+    <p class="notice" id="gpu-note">This runs Qwen3-0.6B entirely in your browser: on your GPU via WebGPU where available (about 570 MB, downloaded once and cached), otherwise on your CPU (about 620 MB, and slower). Live mode shows logit entropy only: the outcome probe needs hidden states the browser build of the model doesn't expose, and it was trained on the larger model anyway. Decoding is greedy.</p>
+    <div class="grid">
+      <div class="card">
+        <label class="label" for="question">Problem</label>
+        <textarea id="question">A store sells pencils in packs of 12 and erasers in packs of 8. Maya wants the same number of pencils and erasers, buying the fewest packs possible. How many packs does she buy in total?</textarea>
+        <div class="controls" style="margin-top:10px">
+          <button class="btn" id="run">Load model &amp; run</button>
+          <button class="btn secondary" id="stop" disabled>Stop</button>
+          <span class="hint" id="status"></span>
+        </div>
+        <div class="progress" id="prog" hidden><i></i></div>
+        <div class="legend"><span>low entropy</span><span class="ramp"></span><span>high</span></div>
+        <div class="trace" id="ltrace" aria-live="polite"></div>
+      </div>
+      <aside class="card insp" id="linsp"><p class="hint">Run the model, then click any token to see the alternatives it considered.</p></aside>
+    </div>
+  </section>
+</div>
+
+<script type="module">
+const $ = (id) => document.getElementById(id);
+const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const show = (t) => (t === "" ? "∅" : t.replace(/\n/g, "↵").replace(/ /g, "␣"));
+const fmtAns = (a) => (a === null || a === undefined ? "none" : Number.isInteger(a) ? String(a) : String(+a.toFixed(4)));
+const MODES = { le: "Logit entropy", z: "Outcome probe", prod: "Outcome × entropy" };
+
+// ---------- tabs ----------
+for (const t of document.querySelectorAll(".tab")) {
+  t.onclick = () => {
+    for (const u of document.querySelectorAll(".tab")) {
+      const on = u === t;
+      u.setAttribute("aria-selected", on);
+      $(u.getAttribute("aria-controls")).hidden = !on;
+    }
+  };
+}
+
+// heat: scale against the trace's 98th percentile so one spike doesn't wash out the rest
+// Entropy gets a fixed scale in bits (0.25 → 2.5), so a color means the same thing in every trace
+const bitsScale = (v) => Math.max(0, Math.min(1, (v - 0.25) / 2.25));
+function scaler(vals) {
+  const s = vals.filter((v) => v > 0).sort((a, b) => a - b);
+  const hi = s.length ? s[Math.floor(0.98 * (s.length - 1))] || s[s.length - 1] : 1;
+  return (v) => Math.max(0, Math.min(1, v / (hi || 1)));
+}
+// convex ramp: only genuinely high values get strong color, low ones fade out
+const heat = (a) => { const v = a ** 1.6; return v < 0.06 ? "" : `background: rgb(var(--heat) / ${(0.06 + 0.7 * v).toFixed(3)})`; };
+
+function optionsHTML(top, chosen) {
+  return top.map(([t, p]) => `
+    <div class="opt"><span class="t" title="${esc(t)}">${esc(show(t))}${t === chosen ? ' <span class="label">· chosen</span>' : ""}</span>
+    <span class="num" style="text-align:right">${p < 0.001 ? "<0.1%" : (100 * p).toFixed(1) + "%"}</span>
+    <span class="bar"><i style="width:${(100 * p).toFixed(1)}%"></i></span></div>`).join("");
+}
+
+// ---------- saved traces ----------
+const state = { i: 0, mode: "prod", tok: null };
+let DATA = [];
+const series = (pr, mode) => {
+  pr._s ??= {};
+  return (pr._s[mode] ??= mode === "le" ? pr.le : mode === "z" ? pr.z.map((v) => Math.max(0, v)) : pr.z.map((v, i) => Math.max(0, v) * pr.le[i]));
+};
+
+function renderSaved() {
+  const pr = DATA[state.i];
+  $("q").textContent = pr.q;
+  const right = Math.abs(pr.ans - pr.ref) < 1e-6;
+  $("meta").innerHTML = `<span>Correct answer <b class="num">${fmtAns(pr.ref)}</b></span><span>Model's answer <b class="num ${right ? "ok" : "bad"}">${fmtAns(pr.ans)}</b></span><span class="num">${pr.toks.length} tokens</span>`;
+  const s = series(pr, state.mode), sc = state.mode === "le" ? bitsScale : scaler(s);
+  $("trace").innerHTML = pr.toks.map((t, i) =>
+    `<span class="tok${pr.cuts[i] ? " cut" : ""}${state.tok === i ? " sel" : ""}" data-i="${i}" style="${heat(sc(s[i]))}">${esc(t)}</span>`).join("");
+  renderInsp();
+}
+
+function renderInsp() {
+  const pr = DATA[state.i], el = $("insp");
+  if (state.tok === null) {
+    const s = series(pr, state.mode);
+    const top = s.map((v, i) => [v, i]).sort((a, b) => b[0] - a[0]).slice(0, 8);
+    el.innerHTML = `<h2>Top tokens · ${MODES[state.mode]}</h2>
+      <p class="hint">The 8 highest-scoring tokens in this trace. Click one, or any token in the trace.</p>
+      <div class="toplist">${top.map(([v, i]) => `<button data-i="${i}"><span class="t">${esc(show(pr.toks[i]))}</span><span class="num">${v.toFixed(2)}</span></button>`).join("")}</div>`;
+    return;
+  }
+  const i = state.tok, br = pr.cuts[i];
+  el.innerHTML = `<h2>Token “<span style="font-family:var(--mono)">${esc(show(pr.toks[i]))}</span>” <span class="label num">#${i}</span></h2>
+    <div class="vals num"><span>Logit entropy</span><span>${pr.le[i].toFixed(2)} bits</span>
+      <span>Outcome probe (z)</span><span>${pr.z[i].toFixed(2)}</span>
+      <span>Outcome × entropy</span><span>${(Math.max(0, pr.z[i]) * pr.le[i]).toFixed(2)}</span></div>
+    <div><span class="label">What the model considered here</span>${optionsHTML(pr.tk[i], pr.toks[i])}</div>
+    ${br ? `<div><span class="label">Forced branches (top-5 tokens, each run to an answer)</span>
+      ${br.map((b) => `<details class="br"><summary><span class="mark ${b.ok ? "ok" : "bad"}">${b.ok ? "✓" : "✗"}</span>
+        <span style="font-family:var(--mono);flex:1">${esc(show(b.t))}</span><span class="num">${(100 * b.p).toFixed(1)}%</span>
+        <span class="num">→ ${fmtAns(b.a)}</span></summary><pre>${esc(b.x)}${b.x.length >= 1200 ? "…" : ""}</pre></details>`).join("")}</div>`
+      : `<p class="hint">No forced branches were run at this token. Dotted-underlined tokens have them.</p>`}
+    <button class="btn secondary" id="clear">Back to top tokens</button>`;
+  $("clear").onclick = () => { state.tok = null; renderSaved(); };
+}
+
+$("trace").addEventListener("click", (e) => {
+  const t = e.target.closest(".tok"); if (!t) return;
+  state.tok = +t.dataset.i; renderSaved();
+});
+$("insp").addEventListener("click", (e) => {
+  const b = e.target.closest(".toplist button"); if (!b) return;
+  state.tok = +b.dataset.i; renderSaved();
+  document.querySelector(`#trace .tok[data-i="${state.tok}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" });
+});
+for (const b of document.querySelectorAll("#modes button")) {
+  b.onclick = () => {
+    state.mode = b.dataset.mode;
+    for (const c of document.querySelectorAll("#modes button")) c.setAttribute("aria-pressed", c === b);
+    renderSaved();
+  };
+}
+$("pick").onchange = (e) => { state.i = +e.target.value; state.tok = null; renderSaved(); };
+
+fetch("data.json").then((r) => r.json()).then((d) => {
+  DATA = d;
+  for (const pr of DATA) for (const k of Object.keys(pr.cuts)) { pr.cuts[+k] = pr.cuts[k]; }
+  $("pick").innerHTML = DATA.map((pr, i) => `<option value="${i}">Problem #${pr.id} · answer ${fmtAns(pr.ref)}, model said ${fmtAns(pr.ans)}</option>`).join("");
+  renderSaved();
+}).catch(() => { $("trace").textContent = "Couldn't load the saved traces."; });
+
+// ---------- live ----------
+const live = { lib: null, m: null, toks: [], stopper: null, sel: null };
+// WebGPU when the browser has a usable adapter, else the CPU (WASM) build
+async function pickBackend() {
+  try { if (navigator.gpu && (await navigator.gpu.requestAdapter())) return { device: "webgpu", dtype: "q4f16" }; } catch (e) {}
+  return { device: "wasm", dtype: "int8" };
+}
+
+function renderLive() {
+  const sc = bitsScale;
+  $("ltrace").innerHTML = live.toks.map((t, i) =>
+    `<span class="tok${live.sel === i ? " sel" : ""}" data-i="${i}" style="${heat(sc(t.entropy))}">${esc(t.text)}</span>`).join("");
+}
+$("ltrace").addEventListener("click", (e) => {
+  const el = e.target.closest(".tok"); if (!el) return;
+  live.sel = +el.dataset.i; const t = live.toks[live.sel];
+  renderLive();
+  $("linsp").innerHTML = `<h2>Token “<span style="font-family:var(--mono)">${esc(show(t.text))}</span>” <span class="label num">#${live.sel}</span></h2>
+    <div class="vals num"><span>Logit entropy</span><span>${t.entropy.toFixed(2)} bits</span></div>
+    <div><span class="label">What the model considered here</span>${optionsHTML(t.top.map((o) => [o.text, o.p]), t.text)}</div>`;
+});
+
+$("run").onclick = async () => {
+  $("run").disabled = true;
+  try {
+    if (!live.lib) {
+      $("status").textContent = "Loading transformers.js…";
+      live.lib = await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1");
+    }
+    const { loadModel, generate } = await import("./live.js");
+    if (!live.m) {
+      $("prog").hidden = false;
+      const files = {};
+      const backend = await pickBackend();
+      live.backend = backend.device === "webgpu" ? "GPU" : "CPU (no WebGPU here, so this is slower)";
+      live.m = await loadModel(live.lib, {
+        ...backend,
+        onProgress: (p) => {
+          if (p.status === "progress" && p.total) {
+            files[p.file] = [p.loaded, p.total];
+            const [l, t] = Object.values(files).reduce((a, [x, y]) => [a[0] + x, a[1] + y], [0, 0]);
+            $("prog").firstElementChild.style.width = `${(100 * l / t).toFixed(1)}%`;
+            $("status").textContent = `Downloading model… ${(l / 1e6).toFixed(0)} / ${(t / 1e6).toFixed(0)} MB`;
+          } else if (p.status === "ready") $("status").textContent = "Compiling for your GPU…";
+        },
+      });
+      $("prog").hidden = true;
+    }
+    live.toks = []; live.sel = null; renderLive();
+    live.stopper = new live.lib.InterruptableStoppingCriteria();
+    $("stop").disabled = false;
+    $("status").textContent = `Generating on ${live.backend}…`;
+    let pendingFrame = false;
+    const r = await generate(live.lib, live.m, $("question").value.trim(), {
+      stopper: live.stopper,
+      onToken: (t) => {
+        live.toks.push(t);
+        if (!pendingFrame) { pendingFrame = true; requestAnimationFrame(() => { pendingFrame = false; renderLive(); }); }
+      },
+    });
+    renderLive();
+    $("status").textContent = r.answer ? `Done. Final answer: ${r.answer}` : "Done (no final answer line).";
+  } catch (err) {
+    console.error(err);
+    $("status").textContent = `Something went wrong: ${err.message || err}`;
+  } finally {
+    $("run").disabled = false; $("run").textContent = "Run"; $("stop").disabled = true;
+  }
+};
+$("stop").onclick = () => live.stopper?.interrupt();
+</script>
+</body>
+</html>

@@ -1,0 +1,79 @@
+---
+// Static line chart for the monotonic-noise result: rescue rate against how
+// much Gaussian noise is mixed into the probe's score. No client JS needed
+// -- the data is fixed at insert time, so the whole SVG is rendered
+// server-side. Theme-aware (uses the site's CSS variables), no baselines by
+// design -- this chart is just the curve itself.
+// Usage: <NoiseCurveChart points={[{x: 0, y: 38.1}, {x: 25, y: 40.5}, ...]} xLabel="..." yLabel="..." />
+interface Point { x: number; y: number }
+interface Props {
+  points: Point[];
+  xLabel?: string;
+  yLabel?: string;
+  caption?: string;
+}
+const { points, xLabel = "Noise fraction mixed into probe score (%)", yLabel = "Rescue rate (%)", caption } = Astro.props;
+
+const W = 640, H = 360;
+const ml = 56, mr = 20, mt = 20, mb = 48;
+const pw = W - ml - mr, ph = H - mt - mb;
+
+const xs = points.map((p) => p.x);
+const ys = points.map((p) => p.y);
+const xMin = Math.min(...xs), xMax = Math.max(...xs);
+const yDataMin = Math.min(...ys), yDataMax = Math.max(...ys);
+const yPad = Math.max((yDataMax - yDataMin) * 0.4, 2);
+const yMin = Math.floor((yDataMin - yPad) / 2) * 2;
+const yMax = Math.ceil((yDataMax + yPad) / 2) * 2;
+
+const sx = (x: number) => ml + ((x - xMin) / (xMax - xMin || 1)) * pw;
+const sy = (y: number) => mt + (1 - (y - yMin) / (yMax - yMin || 1)) * ph;
+
+const yTicks = 5;
+const yTickVals = Array.from({ length: yTicks + 1 }, (_, i) => yMin + ((yMax - yMin) * i) / yTicks);
+
+const pathD = "M " + points.map((p) => `${sx(p.x).toFixed(1)},${sy(p.y).toFixed(1)}`).join(" L ");
+---
+
+<div class="ncc">
+  <svg viewBox={`0 0 ${W} ${H}`} xmlns="http://www.w3.org/2000/svg" role="img" aria-label={`Line chart: ${yLabel} vs ${xLabel}`}>
+    {yTickVals.map((v) => (
+      <g>
+        <line x1={ml} y1={sy(v)} x2={W - mr} y2={sy(v)} class="ncc-grid" />
+        <text x={ml - 8} y={sy(v) + 4} class="ncc-tick" text-anchor="end">{v.toFixed(0)}</text>
+      </g>
+    ))}
+    <line x1={ml} y1={mt} x2={ml} y2={H - mb} class="ncc-axis" />
+    <line x1={ml} y1={H - mb} x2={W - mr} y2={H - mb} class="ncc-axis" />
+    {points.map((p) => (
+      <text x={sx(p.x)} y={H - mb + 20} class="ncc-tick" text-anchor="middle">{p.x.toFixed(0)}</text>
+    ))}
+    <path d={pathD} class="ncc-line" fill="none" />
+    {points.map((p) => (
+      <circle cx={sx(p.x)} cy={sy(p.y)} r="5" class="ncc-dot" />
+    ))}
+    {points.map((p) => (
+      <text x={sx(p.x)} y={sy(p.y) - 12} class="ncc-value" text-anchor="middle">{p.y.toFixed(1)}%</text>
+    ))}
+    <text x={ml + pw / 2} y={H - 6} class="ncc-label" text-anchor="middle">{xLabel}</text>
+    <text x={14} y={mt + ph / 2} class="ncc-label" text-anchor="middle" transform={`rotate(-90, 14, ${mt + ph / 2})`}>{yLabel}</text>
+  </svg>
+  {caption && <p class="ncc-caption">{caption}</p>}
+</div>
+
+<style is:global>
+  .ncc {
+    margin: 1.75rem 0; padding: 1rem;
+    border: 1px solid var(--border-color, #e4e4e7);
+    border-radius: 12px; background: var(--bg-secondary, #fafafa);
+  }
+  .ncc svg { width: 100%; height: auto; display: block; }
+  .ncc-grid { stroke: var(--text-muted, #71717a); stroke-width: 1; opacity: 0.15; }
+  .ncc-axis { stroke: var(--text-muted, #71717a); stroke-width: 1.25; opacity: 0.6; }
+  .ncc-tick { font-size: 11px; fill: var(--text-muted, #71717a); font-family: ui-sans-serif, system-ui, sans-serif; font-variant-numeric: tabular-nums; }
+  .ncc-label { font-size: 12px; font-weight: 600; fill: var(--text-secondary, #3f3f46); font-family: ui-sans-serif, system-ui, sans-serif; }
+  .ncc-line { stroke: var(--accent, #f97316); stroke-width: 2.75; stroke-linejoin: round; stroke-linecap: round; }
+  .ncc-dot { fill: var(--accent, #f97316); stroke: var(--bg-secondary, #fafafa); stroke-width: 1.5; }
+  .ncc-value { font-size: 11px; font-weight: 700; fill: var(--text-primary, #18181b); font-family: ui-sans-serif, system-ui, sans-serif; font-variant-numeric: tabular-nums; }
+  .ncc-caption { margin: 0.6rem 0 0; font-size: 0.8rem; color: var(--text-muted, #71717a); }
+</style>

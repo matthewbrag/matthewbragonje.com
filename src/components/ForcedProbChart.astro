@@ -1,0 +1,106 @@
+---
+// Static grouped bar chart: how likely the forced alternative tokens are,
+// binned by order of magnitude, for each fork-picking strategy. Rendered
+// server-side like NoiseCurveChart; native <title> tooltips on each bar.
+// Usage: <ForcedProbChart bins={["<1e-10", ...]} series={[{name: "Random fork", values: [41, ...]}, ...]} />
+interface Series { name: string; values: number[] }
+interface Props {
+  bins: string[];
+  series: Series[];
+  xLabel?: string;
+  yLabel?: string;
+  caption?: string;
+}
+const { bins, series, xLabel = "Model's probability for the forced token", yLabel = "Share of forced tokens (%)", caption } = Astro.props;
+
+const W = 640, H = 340;
+const ml = 52, mr = 16, mt = 40, mb = 52;
+const pw = W - ml - mr, ph = H - mt - mb;
+const yMax = 100;
+const sy = (v: number) => mt + (1 - v / yMax) * ph;
+const group = pw / bins.length;
+const gap = 2;
+const barW = Math.min(28, (group * 0.7 - gap * (series.length - 1)) / series.length);
+const groupW = barW * series.length + gap * (series.length - 1);
+
+// bar with 4px rounded top corners, square at the baseline
+const bar = (x: number, v: number) => {
+  const y = sy(v), b = sy(0), r = Math.min(4, barW / 2, b - y);
+  if (b - y < 0.5) return "";
+  return `M${x},${b} V${y + r} Q${x},${y} ${x + r},${y} H${x + barW - r} Q${x + barW},${y} ${x + barW},${y + r} V${b} Z`;
+};
+const yTicks = [0, 25, 50, 75, 100];
+---
+
+<figure class="fpc">
+  <div class="fpc-legend">
+    {series.map((s, i) => (
+      <span class="fpc-key"><span class={`fpc-swatch fpc-s${i + 1}`}></span>{s.name}</span>
+    ))}
+  </div>
+  <svg viewBox={`0 0 ${W} ${H}`} xmlns="http://www.w3.org/2000/svg" role="img"
+       aria-label={`Grouped bar chart: ${yLabel} by ${xLabel}, for ${series.map((s) => s.name).join(" and ")}`}>
+    {yTicks.map((v) => (
+      <g>
+        <line x1={ml} y1={sy(v)} x2={W - mr} y2={sy(v)} class="fpc-grid" />
+        <text x={ml - 8} y={sy(v) + 4} class="fpc-tick" text-anchor="end">{v}</text>
+      </g>
+    ))}
+    <line x1={ml} y1={sy(0)} x2={W - mr} y2={sy(0)} class="fpc-axis" />
+    {bins.map((label, bi) => {
+      const x0 = ml + bi * group + (group - groupW) / 2;
+      return (
+        <g>
+          {series.map((s, si) => {
+            const x = x0 + si * (barW + gap), v = s.values[bi];
+            return (
+              <g>
+                <rect x={x - 2} y={mt} width={barW + 4} height={ph} class="fpc-hit"><title>{`${s.name}, ${label}: ${v}%`}</title></rect>
+                <path d={bar(x, v)} class={`fpc-bar fpc-s${si + 1}`}><title>{`${s.name}, ${label}: ${v}%`}</title></path>
+                {v >= 5 && <text x={x + barW / 2} y={sy(v) - 6} class="fpc-value" text-anchor="middle">{v}%</text>}
+              </g>
+            );
+          })}
+          <text x={ml + bi * group + group / 2} y={sy(0) + 18} class="fpc-tick" text-anchor="middle">{label}</text>
+        </g>
+      );
+    })}
+    <text x={ml + pw / 2} y={H - 8} class="fpc-label" text-anchor="middle">{xLabel}</text>
+    <text x={14} y={mt + ph / 2} class="fpc-label" text-anchor="middle" transform={`rotate(-90, 14, ${mt + ph / 2})`}>{yLabel}</text>
+  </svg>
+  {caption && <figcaption class="fpc-caption">{caption}</figcaption>}
+  <details class="fpc-table">
+    <summary>Show as table</summary>
+    <table>
+      <thead><tr><th>Probability</th>{series.map((s) => <th>{s.name}</th>)}</tr></thead>
+      <tbody>{bins.map((label, bi) => <tr><td>{label}</td>{series.map((s) => <td>{s.values[bi]}%</td>)}</tr>)}</tbody>
+    </table>
+  </details>
+</figure>
+
+<style is:global>
+  .fpc {
+    --fpc-s1: #2a78d6; --fpc-s2: #f97316;
+    margin: 1.75rem 0; padding: 1rem;
+    border: 1px solid var(--border-color, #e4e4e7);
+    border-radius: 12px; background: var(--bg-secondary, #fafafa);
+  }
+  html.dark .fpc { --fpc-s1: #3987e5; --fpc-s2: #d95926; }
+  .fpc svg { width: 100%; height: auto; display: block; }
+  .fpc-legend { display: flex; flex-wrap: wrap; gap: 0.4rem 1.1rem; font-size: 0.8rem; color: var(--text-secondary, #3f3f46); margin-bottom: 0.25rem; }
+  .fpc-key { display: inline-flex; align-items: center; gap: 0.4rem; }
+  .fpc-swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+  .fpc-swatch.fpc-s1, .fpc-bar.fpc-s1 { background: var(--fpc-s1); fill: var(--fpc-s1); }
+  .fpc-swatch.fpc-s2, .fpc-bar.fpc-s2 { background: var(--fpc-s2); fill: var(--fpc-s2); }
+  .fpc-hit { fill: transparent; }
+  .fpc-grid { stroke: var(--text-muted, #71717a); stroke-width: 1; opacity: 0.15; }
+  .fpc-axis { stroke: var(--text-muted, #71717a); stroke-width: 1.25; opacity: 0.6; }
+  .fpc-tick { font-size: 11px; fill: var(--text-muted, #71717a); font-family: ui-sans-serif, system-ui, sans-serif; font-variant-numeric: tabular-nums; }
+  .fpc-label { font-size: 12px; font-weight: 600; fill: var(--text-secondary, #3f3f46); font-family: ui-sans-serif, system-ui, sans-serif; }
+  .fpc-value { font-size: 10.5px; font-weight: 700; fill: var(--text-primary, #18181b); font-family: ui-sans-serif, system-ui, sans-serif; font-variant-numeric: tabular-nums; }
+  .fpc-caption { margin: 0.6rem 0 0; font-size: 0.8rem; color: var(--text-muted, #71717a); }
+  .fpc-table { margin-top: 0.5rem; font-size: 0.8rem; color: var(--text-muted, #71717a); }
+  .fpc-table summary { cursor: pointer; }
+  .fpc-table table { margin-top: 0.4rem; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  .fpc-table th, .fpc-table td { padding: 0.15rem 0.8rem 0.15rem 0; text-align: left; }
+</style>

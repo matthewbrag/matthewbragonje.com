@@ -1,0 +1,242 @@
+---
+title: "Uncertainty Is Not A Compass"
+pubDate: 'Oct 26 2026'
+tags: ['Machine Learning', 'AI Research']
+description: "I trained a probe to find where an LLM's reasoning forks. It learned something real, but knowing where a model is uncertain doesn't tell you where to search."
+---
+
+import NoiseCurveChart from '../../components/NoiseCurveChart.astro';
+import ForcedProbChart from '../../components/ForcedProbChart.astro';
+
+# Introduction
+
+LLMs fundamentally generate a decode tree, selecting one branch at a time to explore the next level of the tree. However, an LLM does not necessarily always pick the best path on the tree. I wanted to investigate multiple explorations of a decode tree, and see if there were any good ways to reduce the search space.
+
+Being able to search an LLM's decision space more efficiently would have huge practical implications, perhaps for post training, RL, or solving problems without needing additional training. 
+
+This led me to the idea of entropy. The advantage of entropy is that it doesn't need to understand what the correct answer is, it just needs to predict that a point in the token sequence has meaningful potential for divergence, which is a much simpler problem to tackle. 
+
+I landed on training a probe on hidden states to predict this kind of divergence. The idea isn't mine alone: a recent paper, *[Are Language Models Aware of the Road Not Taken?](https://arxiv.org/abs/2511.04527)* (Zur et al., 2025), trains a linear probe at every token position to predict the outcome distribution of forced continuations from that point, which is close to exactly what I landed on.
+
+Zur et al.'s result is validated on 10 examples from one dataset, on one model. What I actually wanted to know was whether it holds up: across model sizes, against a harder problem domain, and against nonlinear alternatives, at a scale nobody seems to have checked yet.
+
+Having a probe that predicts divergence is mostly useful if we can do something productive with it. I also wanted to know if it was actually useful, so I pitted different tree search methods against each other in a tournament to see which one actually helps to find a correct answer faster. 
+
+# Part 1: Entropy Estimators
+
+I started by manually looking at trees in an interactive explorer, trying to identify for a given prompt: "Where did the model go wrong?" and "Was there any meaningful chance it got to the right answer at some point?" Quickly it was apparent that some tokens are important, sometimes the LLM gets close to the correct answer, and that what seemed like filler dominates the search space. While I was able to identify a few critical untaken decode paths manually, it got old quick and I needed a way to automate.
+
+The goal was to find a cheap token-level entropy computation. I needed a way to score an entropy method, so I needed a ground truth to measure it against. The model is evaluated against the GSM8K set (and later MATH), and at a candidate token position we force the model's own top-5 most likely continuations from that point, let each one run to completion, and look at what comes out the other end.
+
+My first instinct was to measure whether the forced branches disagree on being *right*: take the binary entropy of the fraction that land on the correct final answer. That turns out to be the wrong ground truth. A position where all 5 branches converge on the same wrong answer looks identical, under that metric, to a position where the branches land on 5 different wrong answers: both score zero. But those aren't the same thing: the second is a real fork in the model's reasoning, the first is dead ground that no selection strategy could ever rescue. The binary metric can't tell them apart, and empirically it matters: it correlates with a metric that can tell them apart at only r=0.278, meaning these are substantially different quantities, not just two framings of the same thing.
+
+So the ground truth I actually use is outcome diversity: the Shannon entropy over the *distribution of distinct final answers* the 5 forced branches produce (treating an unparseable answer as its own category), regardless of whether any of them are correct.
+
+$$H_{\text{outcome}} = -\sum_{v} \frac{c_v}{5} \log_2 \frac{c_v}{5}$$
+
+where $c_v$ is the number of the 5 forced branches landing on distinct answer value $v$. This is 0 when all 5 branches agree (the position is settled, correct or not) and $\log_2(5) \approx 2.32$ when all 5 disagree. Across the 6,300 MATH Level 4 points I collected, this isn't an edge case: the branches land on a single shared answer only 51.8% of the time, and all 5 disagree 7.1% of the time.
+
+Here's a real example of exactly the case the binary metric misses — all 5 forced branches are wrong, so the old metric scores this position as a dead end. But they're wrong in 5 *different* ways:
+
+At "Step 4: ___", in a problem about writing 1562 as a sum of powers of 2, forcing *Find*, *Perform*, *Identify*, *Convert* and *Use* led to final answers of 15, 35, 22, 40 and 45 (the correct answer is 27). Binary entropy scores this 0, a dead end. Diversity entropy scores it log₂(5) ≈ 2.32, the maximum.
+
+Admittedly, even outcome entropy is not perfect, and it is prone to noise. Since we calculate it by completing a prompt, and measuring outcomes, we still get meaningless high entropy tokens. For example, in a few decode traces I looked at the token "step" was consistently marked as high entropy, even though stating "step" doesn't necessarily mean that the model is picking the reasoning path it's taking. Presumably since there is inherent noise after the word "step" and outcome entropy measures what follows, "step" gets lots of entropy. 
+
+Maybe that's ideal — it makes sense that you should want to sample a bunch of "step" following traces, but I was intending to find more explicit reasoning choices and outcomes.
+
+Here's a table of the results of each method, including published methods. Below is the motivation and progression for each. Feel free to skip. I've also included an interactive decode entropy visualization where you can see the entropy of each method, [linked below](#try-it-yourself-fork-explorer).
+
+
+| Method | 0.6B / GSM8K | 1.7B / GSM8K | 1.7B / MATH-L3 | 1.7B / MATH-L4 |
+|---|---|---|---|---|
+| Simple Entropy | r = −0.09 | r = −0.11 | r = −0.08 | r = −0.02 |
+| Embedding Weighted Entropy | r = −0.13 | r = −0.11 | — | — |
+| Context Aware Entropy (probe) | r = +0.71 (layer 22) | r = +0.70 (layer 22) | r = +0.57 (layer 26) | r = +0.56 (layer 18) |
+| Published Method: DRAGIN | r = −0.02 | — | — | — |
+
+*Pearson correlation against the diversity_entropy ground truth. Dashes mean the method hasn't been run on that dataset (or hasn't been re-run on the corrected data). Context Aware Entropy numbers are held-out test correlation at each setup's best-performing layer. The MATH columns are from the corrected data collection (after the branch-forcing fix; MATH-L3 is a partial collection of 323 problems); the GSM8K columns and the DRAGIN row are from the earlier collection.*
+
+The models used were Qwen3-0.6B and Qwen3-1.7B.
+
+### Simple (Logit) Entropy
+
+I started with a simple probe, mark each token with the entropy of the token distribution. Mathematically this is:
+
+$$H(t) = -\sum_{i} p_i \log_2 p_i$$
+
+where $p_i$ is the model's predicted probability of vocabulary token $i$ at position $t$, straight out of the softmax.
+
+### Embedding Weighted Entropy
+
+Looking at examples of simple entropy, we can see a failure mode pretty quickly:
+
+In one counting problem, the model writes "we choose the remaining 3 players from the 11 ___", and the next word is a near coin flip between *non*, *remaining* and *other* (44%, 44%, 13%). Simple entropy scores that as highly uncertain, but all five forced continuations reach the same correct answer, 2838.
+
+At a place where you can have a synonym, both words make sense, they have similar probability mass, high entropy, but don't necessarily affect reasoning. This motivated the next estimator, embedding entropy. Use the embedding to determine if words are similar. If similar words are likely that shouldn't really count as entropy. Mathematically this is:
+
+$$H_{\text{sem}}(t) = -\sum_{i} p_i \log_2\left(\sum_{j} S_{ij}\, p_j\right)$$
+
+where $S_{ij} = \cos(\mathbf{e}_i, \mathbf{e}_j)$ is the cosine similarity between the embeddings of tokens $i$ and $j$ (with $S_{ii} = 1$). When every token is equally dissimilar from every other ($S_{ij} = \delta_{ij}$), this collapses exactly back to the raw entropy above. When a likely alternative token $j$ is a near-synonym of $i$, $S_{ij} p_j$ adds into the inner sum, shrinking $-\log_2(\cdot)$ for that term, which is exactly the discount we want: probability mass sitting on a different word for the same meaning shouldn't inflate the score.
+
+Antonyms should in theory sometimes represent separate reasoning paths, so this isn't the best method because antonyms still have moderate similarity, though less than synonyms. Not to mention simple embeddings aren't context aware. 
+
+| Pair | Relationship | Cosine similarity |
+|---|---|---|
+| large / big | synonym | +0.60 |
+| revenue / profit | synonym | +0.40 |
+| hot / cold | antonym | +0.46 |
+| fast / slow | antonym | +0.46 |
+| large / bicycle | random/unrelated | +0.02 |
+| revenue / bicycle | random/unrelated | +0.12 |
+
+Antonyms (~0.46) sit close behind synonyms (0.40–0.60), both clearly separated from unrelated pairs (0.02–0.12) — consistent with the claim above: antonyms get a real but smaller discount than synonyms do.
+
+### Context Aware Entropy
+
+I wanted to see if models had any useful internal state, and probing the internal layers should perhaps give a better understanding. There's decent evidence this isn't a crazy idea: *[Separating Tongue from Thought](https://arxiv.org/abs/2411.08745)* (Dumas et al., 2025) uses activation patching to show transformers represent concepts in a language-agnostic way internally, separate from the surface tokens they eventually output. If hidden states carry that much more than what shows up in the output distribution, they seemed like the obvious next place to look for a better entropy signal than the raw token distribution gives you, especially given the fact that multiple sequences of tokens can represent the same idea.
+
+This did have a modest improvement, and interestingly the best layer wasn't the same across every setup. Predicting outcome entropy directly on GSM8K, the later layers (22 and 28, out of 28 total) won clearly. On the harder MATH problems, the best layer moved: layer 18 on Level 4 and layer 26 on Level 3. That's a nice, if partial, echo of both papers at once: the later-layers-win result matches what Semantic Entropy Probes found for their whole-response entropy target, and the middle-layer result on Level 4 is closer to what Zur et al. found for their token-level probes. Possibly a hint that what layer carries this information depends on the task, not a universal fact about where "uncertainty" lives in the model.
+
+### Published Method: DRAGIN
+
+*[DRAGIN](https://arxiv.org/abs/2403.10081)* (Su et al., 2024) uses attention patterns to decide which tokens are worth intervening on: it scores each token's "information need" by combining the token's own output entropy, how much attention later tokens pay to it, and a filter that drops stopwords, then constructs a query from the top-n highest-attention tokens. I tried something similar: score tokens by how much attention they draw from later positions. It gets dominated by attention-sink artifacts instead, whitespace, punctuation, and BPE continuation fragments soak up disproportionate attention for structural reasons that have nothing to do with the content.
+
+### Outcome Entropy Learning
+
+I wanted to try just learning "how much does this token affect outcomes" from model state. I later realized this is close to what *[Are Language Models Aware of the Road Not Taken?](https://arxiv.org/abs/2511.04527)* (Zur et al., 2025) already does — a linear probe trained on token-level hidden states to predict outcomes, the same paper cited at the top of this piece. Since we have a target, and a model state dataset, I tried a few methods for estimating entropy from state (simple squared-error regression, same target as the probe above, held out by problem). 
+
+I tried a few approaches on my data: tree models, linear models, MLPs, and bottlenecked MLPs. Results were very mixed. Depending on model and dataset, different types of models performed best.
+
+| Dataset | Ridge (linear) | Gradient boosting | Best bottleneck MLP (1-4 units) |
+|---|---|---|---|
+| 0.6B / GSM8K | R² = 0.497 | R² = 0.467 | **R² = 0.512** (4 units — beats Ridge) |
+| 1.7B / GSM8K | R² = 0.483 | **R² = 0.491** | R² = 0.338 (1 unit) |
+| 1.7B / MATH-L3 | **R² = 0.306** | R² = 0.260 | R² = −0.023 (negative) |
+| 1.7B / MATH-L4 | **R² = 0.305** | R² = 0.271 | R² = 0.067 (2 units) |
+
+*Held-out test R² against diversity_entropy. MLPs (32 and 64→8 hidden units, not shown) consistently underperformed both of these on every dataset. The MATH-L4 row is from the corrected data collection (layer 18); the other rows are from the earlier collection, before the branch-forcing fix.*
+
+### Combining Entropy Signals
+Outcome entropy and logit entropy both have their problems. Logit entropy doesn't account for synonyms or non-semantic differences, while outcome entropy is measured by forcing very unlikely paths. For outcome entropy, some of the failure modes look like forcing different integers or strange traces that the model would never realistically reach. This motivated the combined entropy signal, which is computed:
+
+$$S(t) = \max\big(0,\ z_{\text{outcome}}(t)\big) \cdot H(t)$$
+
+where $z_{\text{outcome}}(t)$ is the probe's prediction at token $t$, standardized across the trace (clipped at zero, so below-average tokens score nothing), and $H(t)$ is the simple logit entropy from above. A token only scores high if the model is genuinely unsure there *and* the probe thinks the choice matters.
+
+Scoring this needs a different ground truth. Diversity entropy forces alternatives the model might never pick, so instead I measured natural forks: at a token, sample 16 continuations from just before it and 16 from just after it, and check whether the final-answer distribution shifts. A "real fork" is a shift bigger than 95% of what resampling noise alone produces. Then for each heuristic, I checked how often its top 3 picks per trace were real forks:
+
+| Heuristic | Top-3 picks that are real forks | vs. random positions |
+|---|---|---|
+| Random positions | 9.9% | 1.00x (baseline) |
+| Outcome probe | 8.2% | 0.83x |
+| Logit entropy | 13.0% | 1.32x |
+| Outcome × logit entropy | 13.3% | 1.34x |
+
+*Qwen3-1.7B, MATH Level 4, 261 traces the model got wrong.*
+
+Visually examining a few traces, highlighted by each heuristic, looked very promising, but ultimately it basically tied logit entropy. 
+
+## Try It Yourself: Fork Explorer
+
+You can judge the heuristics for yourself in the **[Fork Explorer](/fork-explorer/index.html)**: real traces shaded by each heuristic, with the model's alternatives and the forced branches at each token. It also has a live mode that runs Qwen3-0.6B in your browser on any problem you type in.
+
+# Part 2: The Tree Search
+
+Now that I have a proxy for "where should we branch?", it is time to see if we can actually branch efficiently. We branch from 250 incorrect traces; every strategy shares the same starting trace, so comparisons are fair. We have three baselines: fresh samples, uniform cuts in the reasoning trace, and a restart plus evenly spaced cuts (one cut at the very first token, which regenerates the whole trace, plus 4 evenly spaced cuts). The uniform-cuts baseline is the same one used in *[Branching Policy Optimization](https://arxiv.org/abs/2607.14171)* (He et al., 2026). We pit different strategies against each other in a tournament, using a list of problems that the original sampling got wrong, measuring how many problems we can recover, and how many tokens it costs.
+
+We pick a branch to mean: cut at 5 points, force the model's top 5 tokens, and let it run to each answer, giving 25 completions total (fresh sample baseline gets a fair 25 samples). Rescued measures what percentage of problems were able to be corrected with any branch, and majority vote measures at what rate the most common answer is correct. 
+
+## Results
+
+Unfortunately, no learned strategy beats its control (restart + 4 cuts, p >= 0.3). It's a shame that complex heuristics don't beat simple baselines. We got within about 8 points of resampling, but never beat it. 
+
+| Strategy | Rescued (any branch) | Majority vote | Tokens / problem |
+|---|---|---|---|
+| 25 fresh sampled solutions | 79.2% | 35.6% | 19.9k |
+| Restart + probe (top score per quarter, no digits) | 71.6% | 18.8% | 15.0k |
+| Restart + outcome × logit entropy (top per quarter) | 71.6% | 20.8% | 14.8k |
+| Restart + logit entropy (top per quarter) | 71.2% | 19.2% | 14.7k |
+| Resample at uniform cuts (no forcing) | 71.2% | 18.0% | 13.0k |
+| Restart + z(outcome) + z(logit entropy) | 70.8% | 21.6% | 14.8k |
+| Restart + guarded product (sampled, one per line) | 69.2% | 23.2% | 15.1k |
+| Restart + 4 evenly spaced cuts | 68.8% | 20.8% | 15.0k |
+| Uniform (5 evenly spaced cuts, incl. start and end) | 67.2% | 18.0% | 13.4k |
+
+*Qwen3-1.7B, MATH Level 4 test set: the 250 problems the model got wrong on its first attempt whose reference answers are integers. Every strategy branches from the same saved traces, so comparisons are paired. "Restart" is a cut at token 0, which regenerates the whole solution from 5 different first tokens. Against the restart + evenly spaced control, no learned strategy is significantly better (paired p ≥ 0.3). Fresh samples beat every branching strategy (p < 0.001), at about 1.3x the tokens. Tokens are newly generated tokens only.*
+
+**Reading the strategy names:**
+- **Restart:** one cut at the very first token, which regenerates the whole solution. Every "Restart + …" strategy spends one of its 5 cuts this way, then picks 4 more.
+- **Top per quarter:** split the trace into quarters and cut at the highest-scoring token in each, so cuts can't all clump together.
+- **Probe, no digits:** the outcome probe's top token. Digits are excluded because the probe otherwise picks almost nothing but digits.
+- **Outcome × logit entropy / z-sum / guarded product:** different ways of combining the probe with logit entropy: multiplied, z-scored and added, or sampled in proportion to the product (at most one cut per line, skipping spots where the alternatives are only whitespace or punctuation).
+- **Resample at uniform cuts:** the same evenly spaced cuts, but instead of forcing 5 different tokens, just sample 5 continuations from that point.
+
+## Would a Better Probe Help?
+
+In order to evaluate if entropy might be fundamentally useful if estimation were better, I injected noise into the outputs of the entropy estimator and measured how tournament performance degraded with noise. In theory, if performance increases with less noise, perhaps improving the estimator could improve search efficiency further.
+
+<NoiseCurveChart
+  points={[
+    { x: 0, y: 56.3 },
+    { x: 25, y: 60.0 },
+    { x: 50, y: 60.4 },
+    { x: 75, y: 60.8 },
+    { x: 100, y: 60.4 },
+  ]}
+  caption="MATH-L4, Qwen3-1.7B, n=245 problems the model first got wrong (integer answers). Rescue rate as the noise fraction mixed into the probe's score goes from 0% (pure probe) to 100% (pure noise). 95% CI about ±6 points per point; trend +3.6 points from pure probe to pure noise, CI [−2.9, +10.3]."
+/>
+
+The flat shape here is not particularly inspiring, neither is the fact that performance apparently goes up with more noise — HA. 
+
+## The Race: In-Depth Efficiency Test
+
+Since resampling kept winning, I tried combining the two: draw a fresh solution, and if it's wrong, branch off *it* at one fork (forcing its 4 most likely alternative tokens) before drawing the next one. Then I raced that against plain resampling, counting tokens until the first correct answer.
+
+Branching off fresh samples did solve more problems within a 2–4k token budget than resampling alone (about 4–8 points, across three runs), but on hard problems the failed forks add up, so on average it took *more* tokens. And where you fork didn't matter: random forks did as well as entropy.
+
+So far, every fork forces the model's top alternatives no matter how likely they are. This leaves an obvious efficiency improvement on the table: can we just pick the reasonably likely branches and ignore the rest? Here's how likely the forced tokens actually are, for random forks vs. forks at the highest-entropy token:
+
+<ForcedProbChart
+  bins={["<10⁻¹⁰", "10⁻¹⁰–10⁻⁸", "10⁻⁸–10⁻⁶", "10⁻⁶–10⁻⁴", "0.01–1%", "≥1%"]}
+  series={[
+    { name: "Random fork", values: [41, 18, 13, 9, 8, 11] },
+    { name: "Highest-entropy fork", values: [0, 0, 0, 1, 2, 97] },
+  ]}
+  caption="Qwen3-1.7B, MATH Level 4, 250 problems. Each fork forces the 4 most likely tokens other than the one the sample used; about 2,900 forced tokens per strategy, binned by the model's probability for that token."
+/>
+
+At random fork points, about 76% of forced tokens have under 0.001% probability: tokens the model would essentially never say. At high-entropy fork points, almost none do (0.4%). So entropy does guarantee you're forcing plausible tokens. Unfortunately, skipping the unlikely ones made no difference: in the race, those near-impossible branches were right about as often as likely ones (11.3% vs. 12.5%), and dropping them just made random forks behave more like plain resampling.
+
+# Engineering Notes
+
+All of this ran locally on 3x RTX 3090s (72GB total VRAM). Qwen3-0.6B and Qwen3-1.7B are both small enough to make this a local-hardware project, not a cloud-cluster one.
+
+One real speedup worth documenting: I finally found a place to use batching. Batching the initial trace-generation step across problems (instead of one problem at a time) gave ~8.3x on Qwen3-0.6B and ~10.2x on Qwen3-1.7B, for that step alone, with a sweet spot around batch=32-64. Generation is roughly 20% of total per-problem cost; the dominant cost was forcing branches at candidate points. This ran near GPU saturation at its working batch width, so batching it further only bought ~1.5-1.8x. The estimated speedup of the whole pipeline is ~15-20%. Of course, a nice speedup available would be to buy some more GPUs, but that's currently outside the reasonable budget for this project.
+
+After one round of a ~15 hour run Claude and I belatedly decided to move to vLLM, achieving a nearly 10x speedup on data generation and a 15x speedup on the tournament. I can't believe that I left those gains on the table for so long! Most of this was due to prefix caching.
+
+# Conclusion
+
+Part of me refuses to believe that resampling from scratch is really the best way to generate diverse decode paths! I got very excited several times when one of my entropy strategies seemed to beat the baseline by a few points, and every time, a fairer control or a bigger sample made the gap disappear. Scaling to the 1.7B model gave better outcome-entropy prediction, but that never turned into better branching.
+
+Here's what I think I actually found. The trained probe learned to predict how sensitive the outcome is to a *forced* change, which mostly means digits, not where the model would naturally take a different path. Plain logit entropy does find real forks, about 1.3x better than chance. But branching off a wrong trace mostly leads back to the same wrong answer, and at the same token budget, sampling fresh solutions wins, especially once you have to pick an answer by majority vote instead of checking every branch against the answer key.
+
+Some hedges: these are small models (0.6B and 1.7B), run without `<think>` reasoning, on math problems with numeric answers, with greedy continuations after each forced token in most experiments (the race held up with sampled continuations too). Bigger models or open-ended tasks could behave differently.
+
+When I look at the big picture, I'm trying to recover latent capability from the model. I'm not forcing it down reasoning paths it would never take, so my branching heuristics can't invent new reasoning from scratch. Branching is just a different way of spending samples from the model's own distribution, and plain resampling is the cheapest, least correlated way to do that. This lines up with *[Does Reinforcement Learning Really Incentivize Reasoning Capacity in LLMs Beyond the Base Model?](https://arxiv.org/abs/2504.13837)* (Yue et al., 2025), which finds RL mostly improves how efficiently a model finds correct paths it could already reach. Branching off fresh samples did find correct answers faster at small budgets, but where you fork didn't matter, so the heuristic wasn't what helped.
+
+I also realized something while working on this and writing it up: I'm trying to predict where divergence might exist, then sample there. But sampling already does that. A fresh sample naturally branches wherever the model is uncertain, in proportion to how uncertain it is. So unless you can prune aggressively, using information the sampler doesn't have (like knowing a branch will rejoin, or will be wrong), smart branching is mostly just resampling with extra steps.
+
+I think there are a few good directions to go next. First, scoring forks by whether the next few tokens actually diverge, rather than estimating whole-output entropy. A quick version of this (checking whether short lookaheads rejoin the original path) gave the best branching results I saw, though still not better than resampling. Second, actively pushing branches apart, maybe through resample-and-eliminate, or some "force" that pushes latent semantic representations away from each other. And third, using fork detection where finding rare correct paths cheaply really matters: exploration during RL training, rather than search at inference time.
+
+The probe was a loss, but I came out knowing much more about where the real forks are, and why finding them isn't enough.
+
+## References
+
+- Su, W., Tang, Y., Ai, Q., Wu, Z., & Liu, Y. (2024). *[DRAGIN: Dynamic Retrieval Augmented Generation based on the Real-time Information Needs of Large Language Models](https://arxiv.org/abs/2403.10081)*.
+- Dumas, C., Wendler, C., Veselovsky, V., Monea, G., & West, R. (2025). *[Separating Tongue from Thought: Activation Patching Reveals Language-Agnostic Concept Representations in Transformers](https://arxiv.org/abs/2411.08745)*.
+- Zur, A., Geiger, A., Lubana, E. S., & Bigelow, E. (2025). *[Are Language Models Aware of the Road Not Taken? Token-level Uncertainty and Hidden State Dynamics](https://arxiv.org/abs/2511.04527)*.
+- Kossen, J., Han, J., Razzak, M., Schut, L., Malik, S., & Gal, Y. (2024). *[Semantic Entropy Probes: Robust and Cheap Hallucination Detection in LLMs](https://arxiv.org/abs/2406.15927)*.
+- He, B., Chen, Y., Zhang, X., & Liu, X. (2026). *[Branching Policy Optimization: Sandbox-Native Language Agent Reinforcement Learning](https://arxiv.org/abs/2607.14171)*.
+- Wei, L., Zhang, Y., Zhang, Z., Wang, Z., Zhao, S., Huang, T., Zhao, H., Liu, C., Zhang, S., & Yan, J. (2026). *[Entropy-Tree: Tree-Based Decoding with Entropy-Guided Exploration](https://arxiv.org/abs/2601.15296)*.
+- Yue, Y., Chen, Z., Lu, R., Zhao, A., Wang, Z., Yue, Y., Song, S., & Huang, G. (2025). *[Does Reinforcement Learning Really Incentivize Reasoning Capacity in LLMs Beyond the Base Model?](https://arxiv.org/abs/2504.13837)*.
