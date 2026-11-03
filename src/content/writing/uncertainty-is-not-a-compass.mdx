@@ -8,6 +8,8 @@ description: "I trained a probe to find where an LLM's reasoning forks. It learn
 import NoiseCurveChart from '../../components/NoiseCurveChart.astro';
 import ForcedProbChart from '../../components/ForcedProbChart.astro';
 
+**TL;DR:** I trained probes on Qwen3's hidden states to predict where its reasoning forks, then used them to decide where to branch during search. The probes predict outcome sensitivity well (r ≈ 0.56 on MATH, where token entropy gets ≈ 0), but what they learned is where *forcing* a different token changes the answer (mostly digits), not where the model would naturally go another way. As a branching strategy, nothing I built beat simple controls, and none of it beat plain resampling. The reason turns out to be simple: a fresh sample already branches wherever the model is uncertain, in proportion to how uncertain it is.
+
 # Introduction
 
 LLMs fundamentally generate a decode tree, selecting one branch at a time to explore the next level of the tree. However, an LLM does not necessarily always pick the best path on the tree. I wanted to investigate multiple explorations of a decode tree, and see if there were any good ways to reduce the search space.
@@ -18,7 +20,7 @@ This led me to the idea of entropy. The advantage of entropy is that it doesn't 
 
 I landed on training a probe on hidden states to predict this kind of divergence. The idea isn't mine alone: a recent paper, *[Are Language Models Aware of the Road Not Taken?](https://arxiv.org/abs/2511.04527)* (Zur et al., 2025), trains a linear probe at every token position to predict the outcome distribution of forced continuations from that point, which is close to exactly what I landed on.
 
-Zur et al.'s result is validated on 10 examples from one dataset, on one model. What I actually wanted to know was whether it holds up: across model sizes, against a harder problem domain, and against nonlinear alternatives, at a scale nobody seems to have checked yet.
+Zur et al.'s result is validated on 10 examples from one dataset, on one model. What I actually wanted to know was whether it holds up: on a harder problem domain, against nonlinear alternatives, and at a scale nobody seems to have checked yet.
 
 Having a probe that predicts divergence is mostly useful if we can do something productive with it. I also wanted to know if it was actually useful, so I pitted different tree search methods against each other in a tournament to see which one actually helps to find a correct answer faster. 
 
@@ -26,7 +28,7 @@ Having a probe that predicts divergence is mostly useful if we can do something 
 
 I started by manually looking at trees in an interactive explorer, trying to identify for a given prompt: "Where did the model go wrong?" and "Was there any meaningful chance it got to the right answer at some point?" Quickly it was apparent that some tokens are important, sometimes the LLM gets close to the correct answer, and that what seemed like filler dominates the search space. While I was able to identify a few critical untaken decode paths manually, it got old quick and I needed a way to automate.
 
-The goal was to find a cheap token-level entropy computation. I needed a way to score an entropy method, so I needed a ground truth to measure it against. The model is evaluated against the GSM8K set (and later MATH), and at a candidate token position we force the model's own top-5 most likely continuations from that point, let each one run to completion, and look at what comes out the other end.
+The goal was to find a cheap token-level entropy computation. I needed a way to score an entropy method, so I needed a ground truth to measure it against. I started on GSM8K, but every result here is on the harder MATH dataset with Qwen3-1.7B. At a candidate token position we force the model's own top-5 most likely continuations from that point, let each one run to completion, and look at what comes out the other end.
 
 My first instinct was to measure whether the forced branches disagree on being *right*: take the binary entropy of the fraction that land on the correct final answer. That turns out to be the wrong ground truth. A position where all 5 branches converge on the same wrong answer looks identical, under that metric, to a position where the branches land on 5 different wrong answers: both score zero. But those aren't the same thing: the second is a real fork in the model's reasoning, the first is dead ground that no selection strategy could ever rescue. The binary metric can't tell them apart, and empirically it matters: it correlates with a metric that can tell them apart at only r=0.278, meaning these are substantially different quantities, not just two framings of the same thing.
 
@@ -47,16 +49,14 @@ Maybe that's ideal — it makes sense that you should want to sample a bunch of 
 Here's a table of the results of each method, including published methods. Below is the motivation and progression for each. Feel free to skip. I've also included an interactive decode entropy visualization where you can see the entropy of each method, [linked below](#try-it-yourself-fork-explorer).
 
 
-| Method | 0.6B / GSM8K | 1.7B / GSM8K | 1.7B / MATH-L3 | 1.7B / MATH-L4 |
-|---|---|---|---|---|
-| Simple Entropy | r = −0.09 | r = −0.11 | r = −0.08 | r = −0.02 |
-| Embedding Weighted Entropy | r = −0.13 | r = −0.11 | — | — |
-| Context Aware Entropy (probe) | r = +0.71 (layer 22) | r = +0.70 (layer 22) | r = +0.57 (layer 26) | r = +0.56 (layer 18) |
-| Published Method: DRAGIN | r = −0.02 | — | — | — |
+| Method | MATH Level 3 | MATH Level 4 |
+|---|---|---|
+| Simple Entropy | r = −0.08 | r = −0.02 |
+| Context Aware Entropy (probe) | r = +0.57 (layer 26) | r = +0.56 (layer 18) |
 
-*Pearson correlation against the diversity_entropy ground truth. Dashes mean the method hasn't been run on that dataset (or hasn't been re-run on the corrected data). Context Aware Entropy numbers are held-out test correlation at each setup's best-performing layer. The MATH columns are from the corrected data collection (after the branch-forcing fix; MATH-L3 is a partial collection of 323 problems); the GSM8K columns and the DRAGIN row are from the earlier collection.*
+*Qwen3-1.7B. Pearson correlation against the diversity_entropy ground truth; probe numbers are held-out test correlation at each setup's best-performing layer. MATH-L3 is a partial collection of 323 problems; MATH-L4 is 6,300 points.*
 
-The models used were Qwen3-0.6B and Qwen3-1.7B.
+Why is simple entropy uncorrelated with outcome diversity (and even slightly negative)? Digits. On the MATH-L4 data, digit positions are where the model is most confident (mean logit entropy 0.04), yet their forced branches disagree about twice as much as everywhere else (outcome entropy 1.04 vs 0.51). The ground truth forces the top 5 tokens even when the model is 99.99% sure of the first one, and forcing a different digit changes the answer. So outcome diversity is often highest exactly where the model *isn't* uncertain. Keep this in mind for the probe results: it comes back to bite.
 
 ### Simple (Logit) Entropy
 
@@ -78,43 +78,42 @@ $$H_{\text{sem}}(t) = -\sum_{i} p_i \log_2\left(\sum_{j} S_{ij}\, p_j\right)$$
 
 where $S_{ij} = \cos(\mathbf{e}_i, \mathbf{e}_j)$ is the cosine similarity between the embeddings of tokens $i$ and $j$ (with $S_{ii} = 1$). When every token is equally dissimilar from every other ($S_{ij} = \delta_{ij}$), this collapses exactly back to the raw entropy above. When a likely alternative token $j$ is a near-synonym of $i$, $S_{ij} p_j$ adds into the inner sum, shrinking $-\log_2(\cdot)$ for that term, which is exactly the discount we want: probability mass sitting on a different word for the same meaning shouldn't inflate the score.
 
-Antonyms should in theory sometimes represent separate reasoning paths, so this isn't the best method because antonyms still have moderate similarity, though less than synonyms. Not to mention simple embeddings aren't context aware. 
+Antonyms should in theory sometimes represent separate reasoning paths, and that's where this method breaks: in embedding space, antonyms look about as similar as synonyms. Not to mention simple embeddings aren't context aware. 
 
 | Pair | Relationship | Cosine similarity |
 |---|---|---|
 | large / big | synonym | +0.60 |
-| revenue / profit | synonym | +0.40 |
+| revenue / profit | related | +0.40 |
 | hot / cold | antonym | +0.46 |
 | fast / slow | antonym | +0.46 |
 | large / bicycle | random/unrelated | +0.02 |
 | revenue / bicycle | random/unrelated | +0.12 |
 
-Antonyms (~0.46) sit close behind synonyms (0.40–0.60), both clearly separated from unrelated pairs (0.02–0.12) — consistent with the claim above: antonyms get a real but smaller discount than synonyms do.
+Antonyms (~0.46) score in the same range as synonyms and related words (0.40–0.60), well above unrelated pairs (0.02–0.12). So the discount can't tell "same meaning" from "opposite meaning", which is exactly the distinction a fork detector needs. In early GSM8K runs it did no better than simple entropy, so I dropped it.
 
 ### Context Aware Entropy
 
 I wanted to see if models had any useful internal state, and probing the internal layers should perhaps give a better understanding. There's decent evidence this isn't a crazy idea: *[Separating Tongue from Thought](https://arxiv.org/abs/2411.08745)* (Dumas et al., 2025) uses activation patching to show transformers represent concepts in a language-agnostic way internally, separate from the surface tokens they eventually output. If hidden states carry that much more than what shows up in the output distribution, they seemed like the obvious next place to look for a better entropy signal than the raw token distribution gives you, especially given the fact that multiple sequences of tokens can represent the same idea.
 
-This did have a modest improvement, and interestingly the best layer wasn't the same across every setup. Predicting outcome entropy directly on GSM8K, the later layers (22 and 28, out of 28 total) won clearly. On the harder MATH problems, the best layer moved: layer 18 on Level 4 and layer 26 on Level 3. That's a nice, if partial, echo of both papers at once: the later-layers-win result matches what Semantic Entropy Probes found for their whole-response entropy target, and the middle-layer result on Level 4 is closer to what Zur et al. found for their token-level probes. Possibly a hint that what layer carries this information depends on the task, not a universal fact about where "uncertainty" lives in the model.
+This was a big improvement over the token distribution, and interestingly the best layer wasn't the same across difficulty levels: layer 26 (of 28) on Level 3, but layer 18 on the harder Level 4. That's a nice, if partial, echo of two papers at once: the late-layer result matches what Semantic Entropy Probes found for their whole-response entropy target, and the middle-layer result on Level 4 is closer to what Zur et al. found for their token-level probes. Possibly a hint that what layer carries this information depends on the task, not a universal fact about where "uncertainty" lives in the model.
 
-### Published Method: DRAGIN
+### Attention-Based Scoring (DRAGIN-style)
 
-*[DRAGIN](https://arxiv.org/abs/2403.10081)* (Su et al., 2024) uses attention patterns to decide which tokens are worth intervening on: it scores each token's "information need" by combining the token's own output entropy, how much attention later tokens pay to it, and a filter that drops stopwords, then constructs a query from the top-n highest-attention tokens. I tried something similar: score tokens by how much attention they draw from later positions. It gets dominated by attention-sink artifacts instead, whitespace, punctuation, and BPE continuation fragments soak up disproportionate attention for structural reasons that have nothing to do with the content.
+*[DRAGIN](https://arxiv.org/abs/2403.10081)* (Su et al., 2024) uses attention patterns to decide which tokens are worth intervening on: it scores each token's "information need" by combining the token's own output entropy, how much attention later tokens pay to it, and a filter that drops stopwords, then constructs a query from the top-n highest-attention tokens. I tried something similar: score tokens by how much attention they draw from later positions. It gets dominated by attention-sink artifacts instead, whitespace, punctuation, and BPE continuation fragments soak up disproportionate attention for structural reasons that have nothing to do with the content. In early GSM8K runs it was uncorrelated with outcome diversity (r = −0.02), so I didn't carry it forward.
 
-### Outcome Entropy Learning
+### Which Probe Architecture?
 
-I wanted to try just learning "how much does this token affect outcomes" from model state. I later realized this is close to what *[Are Language Models Aware of the Road Not Taken?](https://arxiv.org/abs/2511.04527)* (Zur et al., 2025) already does — a linear probe trained on token-level hidden states to predict outcomes, the same paper cited at the top of this piece. Since we have a target, and a model state dataset, I tried a few methods for estimating entropy from state (simple squared-error regression, same target as the probe above, held out by problem). 
+The context-aware probe above is linear. The natural question is whether a more expressive model reads more out of the same hidden states. This is the same setup as Zur et al. (a probe on token-level hidden states predicting outcomes), so I compared a few model classes on the same target (squared-error regression on diversity entropy, held out by problem). 
 
-I tried a few approaches on my data: tree models, linear models, MLPs, and bottlenecked MLPs. Results were very mixed. Depending on model and dataset, different types of models performed best.
+I tried tree models, linear models, MLPs, and bottlenecked MLPs. Nothing beat the linear probe:
 
-| Dataset | Ridge (linear) | Gradient boosting | Best bottleneck MLP (1-4 units) |
+| Probe | Ridge (linear) | Gradient boosting | Best bottleneck MLP (1-4 units) |
 |---|---|---|---|
-| 0.6B / GSM8K | R² = 0.497 | R² = 0.467 | **R² = 0.512** (4 units — beats Ridge) |
-| 1.7B / GSM8K | R² = 0.483 | **R² = 0.491** | R² = 0.338 (1 unit) |
-| 1.7B / MATH-L3 | **R² = 0.306** | R² = 0.260 | R² = −0.023 (negative) |
-| 1.7B / MATH-L4 | **R² = 0.305** | R² = 0.271 | R² = 0.067 (2 units) |
+| Held-out R² | **0.305** | 0.271 | 0.067 (2 units) |
 
-*Held-out test R² against diversity_entropy. MLPs (32 and 64→8 hidden units, not shown) consistently underperformed both of these on every dataset. The MATH-L4 row is from the corrected data collection (layer 18); the other rows are from the earlier collection, before the branch-forcing fix.*
+*Qwen3-1.7B, MATH Level 4, layer 18, held-out test R² against diversity_entropy. Wider MLPs (32 and 64→8 hidden units) did worse than both.*
+
+Whatever the hidden states know about outcome sensitivity, a linear readout gets all of it.
 
 ### Combining Entropy Signals
 Outcome entropy and logit entropy both have their problems. Logit entropy doesn't account for synonyms or non-semantic differences, while outcome entropy is measured by forcing very unlikely paths. For outcome entropy, some of the failure modes look like forcing different integers or strange traces that the model would never realistically reach. This motivated the combined entropy signal, which is computed:
@@ -135,6 +134,8 @@ Scoring this needs a different ground truth. Diversity entropy forces alternativ
 *Qwen3-1.7B, MATH Level 4, 261 traces the model got wrong.*
 
 Visually examining a few traces, highlighted by each heuristic, looked very promising, but ultimately it basically tied logit entropy. 
+
+Note the paradox in that table: the probe predicts outcome diversity well, yet picks real forks *less* often than random. It's the digit effect from earlier. The probe learned exactly what its target rewards: places where forcing a different token changes the answer. Those are mostly digits the model is certain about and would never naturally change. It predicts sensitivity to forcing, not where the model actually forks.
 
 ## Try It Yourself: Fork Explorer
 
@@ -217,11 +218,11 @@ After one round of a ~15 hour run Claude and I belatedly decided to move to vLLM
 
 # Conclusion
 
-Part of me refuses to believe that resampling from scratch is really the best way to generate diverse decode paths! I got very excited several times when one of my entropy strategies seemed to beat the baseline by a few points, and every time, a fairer control or a bigger sample made the gap disappear. Scaling to the 1.7B model gave better outcome-entropy prediction, but that never turned into better branching.
+Part of me refuses to believe that resampling from scratch is really the best way to generate diverse decode paths! I got very excited several times when one of my entropy strategies seemed to beat the baseline by a few points, and every time, a fairer control or a bigger sample made the gap disappear. A probe that predicts outcome entropy well never turned into better branching.
 
 Here's what I think I actually found. The trained probe learned to predict how sensitive the outcome is to a *forced* change, which mostly means digits, not where the model would naturally take a different path. Plain logit entropy does find real forks, about 1.3x better than chance. But branching off a wrong trace mostly leads back to the same wrong answer, and at the same token budget, sampling fresh solutions wins, especially once you have to pick an answer by majority vote instead of checking every branch against the answer key.
 
-Some hedges: these are small models (0.6B and 1.7B), run without `<think>` reasoning, on math problems with numeric answers, with greedy continuations after each forced token in most experiments (the race held up with sampled continuations too). Bigger models or open-ended tasks could behave differently.
+Some hedges: this is a small model (Qwen3-1.7B), run without `<think>` reasoning, on math problems with numeric answers, with greedy continuations after each forced token in most experiments (the race held up with sampled continuations too). Bigger models or open-ended tasks could behave differently.
 
 When I look at the big picture, I'm trying to recover latent capability from the model. I'm not forcing it down reasoning paths it would never take, so my branching heuristics can't invent new reasoning from scratch. Branching is just a different way of spending samples from the model's own distribution, and plain resampling is the cheapest, least correlated way to do that. This lines up with *[Does Reinforcement Learning Really Incentivize Reasoning Capacity in LLMs Beyond the Base Model?](https://arxiv.org/abs/2504.13837)* (Yue et al., 2025), which finds RL mostly improves how efficiently a model finds correct paths it could already reach. Branching off fresh samples did find correct answers faster at small budgets, but where you fork didn't matter, so the heuristic wasn't what helped.
 
